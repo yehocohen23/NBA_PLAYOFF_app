@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from "react";
+import { createClient } from '@supabase/supabase-js';
 
 // ─── TEAMS ──────────────────────────────────────────────────────────────────
 const T={
@@ -129,8 +130,12 @@ function scoreUser(u,res,cfg){
   return {total,bd};
 }
 
-// ─── PERSIST ────────────────────────────────────────────────────────────────
-const K={u:"n26u",r:"n26r",c:"n26c",s:"n26s"};
+// ─── SUPABASE ────────────────────────────────────────────────────────────────
+const SUPABASE_URL='https://gubnjzvjxfvlnsxgxvds.supabase.co';
+const SUPABASE_ANON_KEY='sb_publishable_HnDw8l4pHQTiNrHPvO9s2Q_-zxwr0zZ';
+const sb=createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
+
+// ─── PERSIST (session only — local) ─────────────────────────────────────────
 const ld=(k,d)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):d;}catch{return d;}};
 const sv=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch{}};
 
@@ -191,31 +196,62 @@ const btn={
 const DEFAULT_ADMIN_PW = "nba2026admin";
 
 export default function App(){
-  const [users,setUsers]   =useState(()=>ld(K.u,[]));
-  const [res,setRes]       =useState(()=>ld(K.r,{po:{},pi:{},champ:null,mvp:null}));
-  const [cfg,setCfg]       =useState(()=>ld(K.c,{
+  const [users,setUsers]     =useState([]);
+  const [res,setRes]         =useState({po:{},pi:{},champ:null,mvp:null});
+  const [cfg,setCfgRaw]      =useState({
     rPi:false, rPo:false, openR:"r1",
-    deadline:null,
-    adminPw:null,
+    deadline:null, adminPw:null,
     prizes:{p1:"TBD by admin",p2:"TBD by admin",p3:"TBD by admin"},
     leagueName:"NBA Playoffs 2026",
-  }));
-  const [sess,setSess]     =useState(()=>ld(K.s,null));
-  useEffect(()=>sv(K.u,users),[users]);
-  useEffect(()=>sv(K.r,res),[res]);
-  useEffect(()=>sv(K.c,cfg),[cfg]);
-  useEffect(()=>sv(K.s,sess),[sess]);
+  });
+  const [sess,setSess]       =useState(()=>ld("n26s",null));
+  const [loading,setLoading] =useState(true);
+
+  // ── Session → localStorage only ──────────────────────────────────────────
+  useEffect(()=>sv("n26s",sess),[sess]);
+
+  // ── Load from Supabase + Realtime subscriptions ───────────────────────────
+  useEffect(()=>{
+    let resCh, cfgCh;
+    (async()=>{
+      const [uRes,rRes,cRes]=await Promise.all([
+        sb.from('users').select('*'),
+        sb.from('results').select('data').eq('id',1).single(),
+        sb.from('app_config').select('data').eq('id',1).single(),
+      ]);
+      if(uRes.data) setUsers(uRes.data.map(u=>({...u,photo:u.photo_url,po:u.po||{},pi:u.pi||{}})));
+      if(rRes.data?.data) setRes(rRes.data.data);
+      if(cRes.data?.data) setCfgRaw(cRes.data.data);
+      setLoading(false);
+    })();
+
+    resCh=sb.channel('results_rt')
+      .on('postgres_changes',{event:'UPDATE',schema:'public',table:'results'},
+        p=>{if(p.new?.data) setRes(p.new.data);})
+      .subscribe();
+
+    cfgCh=sb.channel('config_rt')
+      .on('postgres_changes',{event:'UPDATE',schema:'public',table:'app_config'},
+        p=>{if(p.new?.data) setCfgRaw(p.new.data);})
+      .subscribe();
+
+    return ()=>{sb.removeChannel(resCh);sb.removeChannel(cfgCh);};
+  },[]);
 
   const all=[...users,AI];
   const me=sess?.uid?users.find(u=>u.id===sess.uid):null;
   const adminPw=cfg.adminPw||DEFAULT_ADMIN_PW;
   const bettingOpen=!cfg.deadline||new Date()<new Date(cfg.deadline);
 
-  const reg=(name,email,pw)=>{
+  // ── Auth ──────────────────────────────────────────────────────────────────
+  const reg=async(name,email,pw)=>{
     if(email.toLowerCase()==="admin") return "That email is reserved";
     if(users.find(u=>u.email===email)) return "Email already in use";
-    const u={id:Date.now()+"",name,email,password:pw,po:{},pi:{},champ:null,mvp:null,photo:null};
-    setUsers(p=>[...p,u]); setSess({uid:u.id}); return null;
+    const u={id:Date.now()+"",name,email,password:pw,photo_url:null,po:{},pi:{},champ:null,mvp:null};
+    const {error}=await sb.from('users').insert(u);
+    if(error) return "Registration error: "+error.message;
+    setUsers(p=>[...p,{...u,photo:null}]);
+    setSess({uid:u.id}); return null;
   };
   const login=(email,pw)=>{
     if(email.toLowerCase()==="admin"){
@@ -227,14 +263,55 @@ export default function App(){
     setSess({uid:u.id}); return null;
   };
   const logout=()=>setSess(null);
-  const savePO=(uid,po,champ,mvp)=>setUsers(p=>p.map(u=>u.id===uid?{...u,po,champ,mvp}:u));
-  const savePI=(uid,pi)=>setUsers(p=>p.map(u=>u.id===uid?{...u,pi}:u));
-  const savePhoto=(uid,photo)=>setUsers(p=>p.map(u=>u.id===uid?{...u,photo}:u));
-  const removeUser=(uid)=>setUsers(p=>p.filter(u=>u.id!==uid));
-  const setPoR=(sid,w,g)=>setRes(p=>({...p,po:{...p.po,[sid]:{w,g:parseInt(g)||null}}}));
-  const setPiR=(mid,w)=>setRes(p=>({...p,pi:{...p.pi,[mid]:{w}}}));
-  const setChamp=(c)=>setRes(p=>({...p,champ:c}));
-  const setMvp=(m)=>setRes(p=>({...p,mvp:m}));
+
+  // ── User picks ────────────────────────────────────────────────────────────
+  const savePO=async(uid,po,champ,mvp)=>{
+    await sb.from('users').update({po,champ,mvp}).eq('id',uid);
+    setUsers(p=>p.map(u=>u.id===uid?{...u,po,champ,mvp}:u));
+  };
+  const savePI=async(uid,pi)=>{
+    await sb.from('users').update({pi}).eq('id',uid);
+    setUsers(p=>p.map(u=>u.id===uid?{...u,pi}:u));
+  };
+  const savePhoto=async(uid,photo)=>{
+    await sb.from('users').update({photo_url:photo}).eq('id',uid);
+    setUsers(p=>p.map(u=>u.id===uid?{...u,photo}:u));
+  };
+  const removeUser=async(uid)=>{
+    await sb.from('users').delete().eq('id',uid);
+    setUsers(p=>p.filter(u=>u.id!==uid));
+  };
+
+  // ── Results (admin) → Supabase + realtime ─────────────────────────────────
+  const updateRes=(updater)=>{
+    setRes(prev=>{
+      const next=typeof updater==="function"?updater(prev):updater;
+      sb.from('results').update({data:next}).eq('id',1);
+      return next;
+    });
+  };
+  const setPoR=(sid,w,g)=>updateRes(p=>({...p,po:{...p.po,[sid]:{w,g:parseInt(g)||null}}}));
+  const setPiR=(mid,w)=>updateRes(p=>({...p,pi:{...p.pi,[mid]:{w}}}));
+  const setChamp=(c)=>updateRes(p=>({...p,champ:c}));
+  const setMvp=(m)=>updateRes(p=>({...p,mvp:m}));
+
+  // ── Config (admin) → Supabase + realtime ──────────────────────────────────
+  const setCfg=(updater)=>{
+    setCfgRaw(prev=>{
+      const next=typeof updater==="function"?updater(prev):updater;
+      sb.from('app_config').update({data:next}).eq('id',1);
+      return next;
+    });
+  };
+
+  // ── Loading screen ────────────────────────────────────────────────────────
+  if(loading) return(
+    <div style={{minHeight:"100vh",background:C.bg0,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}>
+      <div style={{fontSize:52}}>🏀</div>
+      <div style={{color:C.t2,fontSize:15,fontWeight:700}}>Loading league data…</div>
+      <div style={{color:C.t3,fontSize:12}}>Connecting to database</div>
+    </div>
+  );
 
   if(!sess) return <Auth onLogin={login} onReg={reg} leagueName={cfg.leagueName}/>;
   if(sess.admin) return <Admin users={all} res={res} cfg={cfg} adminPw={adminPw}
@@ -330,6 +407,7 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen}){
   const [champ,setChamp]=useState(me.champ||"");
   const [mvp,setMvp]=useState(me.mvp||"");
   const [saved,setSaved]=useState(false);
+  const [saveErr,setSaveErr]=useState("");
   const [activeR,setActiveR]=useState(cfg.openR||"r1");
   const openIdx=ROUND_KEYS.indexOf(cfg.openR||"r1");
 
@@ -340,8 +418,20 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen}){
   const finalsSeries=allRoundSeries.filter(s=>s.conf==="F");
   const roundPts=ROUNDS.find(r=>r.k===activeR).pts;
 
-  const setPred=(sid,field,val)=>setDraft(p=>({...p,[sid]:{...(p[sid]||{}),[field]:field==="g"?parseInt(val):val}}));
-  const doSave=()=>{onSave(me.id,draft,champ||null,mvp||null);setSaved(true);setTimeout(()=>setSaved(false),2500);};
+  const setPred=(sid,field,val)=>{setSaveErr("");setDraft(p=>({...p,[sid]:{...(p[sid]||{}),[field]:field==="g"?parseInt(val):val}}));};
+  const doSave=()=>{
+    // Validate: every series with a winner must also have a game count
+    const allOpenSeries=SERIES.filter(s=>ROUND_KEYS.indexOf(s.r)<=openIdx);
+    const incomplete=allOpenSeries.filter(s=>draft[s.id]?.w&&!draft[s.id]?.g);
+    if(incomplete.length>0){
+      setSaveErr(`⚠️ נא לבחור גם כמה משחקים ב-${incomplete.length} סדרה${incomplete.length>1?"ות":""} (${incomplete.map(s=>sn(s.t1)+" vs "+sn(s.t2)).join(", ")})`);
+      return;
+    }
+    setSaveErr("");
+    onSave(me.id,draft,champ||null,mvp||null);
+    setSaved(true);
+    setTimeout(()=>setSaved(false),2500);
+  };
 
   const SeriesCard=({s})=>{
     const pred=draft[s.id]||{};
@@ -462,7 +552,11 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen}){
 
       <div style={{textAlign:"center"}}>
         {bettingOpen
-          ?<><button onClick={doSave} style={{...btn.p,padding:"13px 44px",fontSize:15}}>{saved?"✓ Picks Saved!":"Save My Predictions"}</button><p style={{color:C.t3,fontSize:11,marginTop:8}}>Predictions lock at the deadline set by admin.</p></>
+          ?<>
+            <button onClick={doSave} style={{...btn.p,padding:"13px 44px",fontSize:15}}>{saved?"✓ Picks Saved!":"Save My Predictions"}</button>
+            {saveErr&&<div style={{background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.35)",borderRadius:10,padding:"10px 16px",marginTop:10,color:C.er,fontWeight:700,fontSize:13,textAlign:"right",direction:"rtl"}}>{saveErr}</div>}
+            {!saveErr&&<p style={{color:C.t3,fontSize:11,marginTop:8}}>Predictions lock at the deadline set by admin.</p>}
+          </>
           :<div style={{background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.3)",borderRadius:12,padding:"14px 18px",color:C.er,fontWeight:700,fontSize:14}}>🔒 Betting is closed — predictions are locked</div>
         }
       </div>
@@ -1037,8 +1131,9 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
             <option value="">—</option>
             {[4,5,6,7].map(g=><option key={g} value={g}>{g}</option>)}
           </select>
+          {(!ew||!eg)&&<p style={{color:C.er,fontSize:12,margin:"0 0 10px",textAlign:"center",fontWeight:700}}>⚠️ חובה לבחור קבוצה + מספר משחקים</p>}
           <div style={{display:"flex",gap:8}}>
-            <button onClick={()=>{setPoR(editSid,ew,eg);setEditSid(null);}} style={{...btn.p,flex:1}}>Save</button>
+            <button onClick={()=>{setPoR(editSid,ew,eg);setEditSid(null);}} disabled={!ew||!eg} style={{...btn.p,flex:1,opacity:(!ew||!eg)?0.35:1,cursor:(!ew||!eg)?"not-allowed":"pointer"}}>Save</button>
             <button onClick={()=>setEditSid(null)} style={{...btn.g,flex:1}}>Cancel</button>
           </div>
         </div>
