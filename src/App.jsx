@@ -35,7 +35,6 @@ const T={
 };
 const EAST_ABBRS=["ATL","BKN","BOS","CHA","CHI","CLE","DET","IND","MIA","MIL","NYK","ORL","PHI","TOR","WAS"];
 const WEST_ABBRS=["DAL","DEN","GSW","HOU","LAC","LAL","MEM","MIN","NOP","OKC","PHX","POR","SAC","SAS","UTA"];
-const PLAYOFF_ABBRS=["DET","BOS","NYK","CLE","TOR","ATL","OKC","SAS","DEN","LAL","HOU","MIN"];
 
 // ─── MVP CANDIDATES ─────────────────────────────────────────────────────────
 const MVPS=[
@@ -185,6 +184,7 @@ const btn={
   w:{padding:"10px 18px",border:"1px solid rgba(251,191,36,.4)",borderRadius:10,background:"rgba(251,191,36,.08)",color:"#fbbf24",fontWeight:800,cursor:"pointer",fontSize:13},
   g:{padding:"8px 14px",border:`1px solid ${C.bd}`,borderRadius:9,background:"transparent",color:C.t2,fontWeight:700,cursor:"pointer",fontSize:13},
   a:{padding:"8px 14px",border:`1px solid #f97316`,borderRadius:8,background:"rgba(249,115,22,.12)",color:"#f97316",fontWeight:700,cursor:"pointer",fontSize:13},
+  danger:{padding:"6px 12px",border:"1px solid rgba(248,113,113,.4)",borderRadius:8,background:"rgba(248,113,113,.08)",color:"#f87171",fontWeight:700,cursor:"pointer",fontSize:12},
 };
 
 // ─── APP ROOT ────────────────────────────────────────────────────────────────
@@ -230,6 +230,7 @@ export default function App(){
   const savePO=(uid,po,champ,mvp)=>setUsers(p=>p.map(u=>u.id===uid?{...u,po,champ,mvp}:u));
   const savePI=(uid,pi)=>setUsers(p=>p.map(u=>u.id===uid?{...u,pi}:u));
   const savePhoto=(uid,photo)=>setUsers(p=>p.map(u=>u.id===uid?{...u,photo}:u));
+  const removeUser=(uid)=>setUsers(p=>p.filter(u=>u.id!==uid));
   const setPoR=(sid,w,g)=>setRes(p=>({...p,po:{...p.po,[sid]:{w,g:parseInt(g)||null}}}));
   const setPiR=(mid,w)=>setRes(p=>({...p,pi:{...p.pi,[mid]:{w}}}));
   const setChamp=(c)=>setRes(p=>({...p,champ:c}));
@@ -238,7 +239,7 @@ export default function App(){
   if(!sess) return <Auth onLogin={login} onReg={reg} leagueName={cfg.leagueName}/>;
   if(sess.admin) return <Admin users={all} res={res} cfg={cfg} adminPw={adminPw}
     setPoR={setPoR} setPiR={setPiR} setChamp={setChamp} setMvp={setMvp}
-    setCfg={setCfg} logout={logout}/>;
+    setCfg={setCfg} logout={logout} removeUser={removeUser}/>;
   if(me) return <Main me={me} all={all} res={res} cfg={cfg} bettingOpen={bettingOpen}
     savePO={savePO} savePI={savePI} savePhoto={savePhoto} logout={logout}/>;
   return <Auth onLogin={login} onReg={reg} leagueName={cfg.leagueName}/>;
@@ -280,7 +281,18 @@ function Main({me,all,res,cfg,bettingOpen,savePO,savePI,savePhoto,logout}){
   const scores=useMemo(()=>all.map(u=>({...u,...scoreUser(u,res,cfg)})).sort((a,b)=>b.total-a.total),[all,res,cfg]);
   const myS=scores.find(s=>s.id===me.id);
   const myR=scores.findIndex(s=>s.id===me.id)+1;
-  const TABS=[{k:"picks",i:"🏀",l:"My Picks"},{k:"playin",i:"⚡",l:"Play-In"},{k:"teams",i:"📊",l:"Teams"},{k:"rules",i:"📋",l:"Rules"},{k:"prizes",i:"🎁",l:"Prizes"},{k:"board",i:"🏅",l:"Standings"},{k:"profile",i:"👤",l:"Profile"},...((cfg.rPo||cfg.rPi)?[{k:"all",i:"👀",l:"All Picks"}]:[])];
+  // Finals MVP only visible when Finals round is open
+  const finalsOpen=ROUND_KEYS.indexOf(cfg.openR||"r1")>=ROUND_KEYS.indexOf("finals");
+  const TABS=[
+    {k:"picks",i:"🏀",l:"My Picks"},
+    {k:"playin",i:"⚡",l:"Play-In"},
+    {k:"teams",i:"📊",l:"Teams"},
+    {k:"rules",i:"📋",l:"Rules"},
+    {k:"prizes",i:"🎁",l:"Prizes"},
+    {k:"board",i:"🏅",l:"Standings"},
+    {k:"profile",i:"👤",l:"Profile"},
+    ...((cfg.rPo||cfg.rPi)?[{k:"all",i:"👀",l:"All Picks"}]:[]),
+  ];
   return(
     <div style={{minHeight:"100vh",background:C.bg0,color:C.t1,fontFamily:"'DM Sans','Segoe UI',sans-serif"}}>
       <header style={{background:C.bg1,borderBottom:`1px solid ${C.bd}`,padding:"10px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap",position:"sticky",top:0,zIndex:50}}>
@@ -298,8 +310,8 @@ function Main({me,all,res,cfg,bettingOpen,savePO,savePI,savePhoto,logout}){
         {TABS.map(t=><button key={t.k} onClick={()=>setTab(t.k)} style={{padding:"10px 14px",border:"none",background:"transparent",color:tab===t.k?C.acc:C.t3,cursor:"pointer",fontSize:12,fontWeight:700,borderBottom:`2px solid ${tab===t.k?C.acc:"transparent"}`,whiteSpace:"nowrap"}}>{t.i} {t.l}</button>)}
       </nav>
       {!bettingOpen&&<div style={{background:"rgba(248,113,113,.1)",borderBottom:"1px solid rgba(248,113,113,.3)",padding:"8px 18px",textAlign:"center",color:C.er,fontSize:12,fontWeight:700}}>🔒 Betting is closed — predictions are locked</div>}
-            <main style={{maxWidth:980,margin:"0 auto",padding:"20px 14px 70px"}}>
-        {tab==="picks"   &&<Picks   me={me} res={res} cfg={cfg} onSave={savePO} bettingOpen={bettingOpen}/>}
+      <main style={{maxWidth:980,margin:"0 auto",padding:"20px 14px 70px"}}>
+        {tab==="picks"   &&<Picks   me={me} res={res} cfg={cfg} onSave={savePO} bettingOpen={bettingOpen} finalsOpen={finalsOpen}/>}
         {tab==="playin"  &&<Playin  me={me} res={res} cfg={cfg} onSave={savePI} bettingOpen={bettingOpen}/>}
         {tab==="teams"   &&<Teams/>}
         {tab==="rules"   &&<Rules/>}
@@ -313,21 +325,59 @@ function Main({me,all,res,cfg,bettingOpen,savePO,savePI,savePhoto,logout}){
 }
 
 // ─── PICKS ───────────────────────────────────────────────────────────────────
-function Picks({me,res,cfg,onSave,bettingOpen}){
+function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen}){
   const [draft,setDraft]=useState({...me.po});
   const [champ,setChamp]=useState(me.champ||"");
   const [mvp,setMvp]=useState(me.mvp||"");
   const [saved,setSaved]=useState(false);
   const [activeR,setActiveR]=useState(cfg.openR||"r1");
   const openIdx=ROUND_KEYS.indexOf(cfg.openR||"r1");
-  const roundSeries=SERIES.filter(s=>s.r===activeR);
+
+  // Split series by conference for current round
+  const allRoundSeries=SERIES.filter(s=>s.r===activeR);
+  const eastSeries=allRoundSeries.filter(s=>s.conf==="E");
+  const westSeries=allRoundSeries.filter(s=>s.conf==="W");
+  const finalsSeries=allRoundSeries.filter(s=>s.conf==="F");
   const roundPts=ROUNDS.find(r=>r.k===activeR).pts;
+
   const setPred=(sid,field,val)=>setDraft(p=>({...p,[sid]:{...(p[sid]||{}),[field]:field==="g"?parseInt(val):val}}));
   const doSave=()=>{onSave(me.id,draft,champ||null,mvp||null);setSaved(true);setTimeout(()=>setSaved(false),2500);};
+
+  const SeriesCard=({s})=>{
+    const pred=draft[s.id]||{};
+    const real=res.po?.[s.id];
+    const sc=scoreS(pred,real,roundPts);
+    const bg=BG[sc.t];
+    return(
+      <div style={{background:sc.t!=="pending"?bg.bg:C.bg2,border:`1px solid ${sc.t!=="pending"?bg.c:C.bdL}`,borderRadius:14,padding:16}}>
+        <div style={{display:"flex",background:C.bg3,borderRadius:10,overflow:"hidden",marginBottom:10}}>
+          {[{k:s.t1},{k:s.t2}].map(({k},idx)=>{
+            const isSel=pred.w===k;
+            return <button key={k} onClick={()=>setPred(s.id,"w",k)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"10px 6px",border:"none",cursor:"pointer",background:isSel?`linear-gradient(${idx===0?"135deg":"225deg"},rgba(249,115,22,.2),transparent)`:"transparent",outline:isSel?`2px solid ${C.acc}`:"none",outlineOffset:-2,position:"relative"}}>
+              <Logo abbr={k} size={40}/>
+              <div style={{fontSize:10,fontWeight:700,color:isSel?C.acc:C.t2,marginTop:5,textAlign:"center",lineHeight:1.2}}>{sn(k)}</div>
+              {isSel&&<div style={{fontSize:9,color:C.acc,fontWeight:800}}>✓ PICKED</div>}
+              {idx===0&&<div style={{position:"absolute",right:0,top:"50%",transform:"translateY(-50%)",fontSize:9,color:C.t3,fontWeight:700}}>vs</div>}
+            </button>;
+          })}
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:5}}>
+          <span style={{fontSize:11,color:C.t3,marginRight:2}}>Games:</span>
+          {[4,5,6,7].map(g=><button key={g} onClick={()=>setPred(s.id,"g",g)} style={{width:30,height:30,border:`1px solid ${pred.g===g?C.acc:C.bd}`,borderRadius:7,background:pred.g===g?C.aD:"transparent",color:pred.g===g?C.acc:C.t3,fontWeight:700,cursor:"pointer",fontSize:12}}>{g}</button>)}
+        </div>
+        {cfg.rPo&&real?.w&&<div style={{marginTop:8,background:C.bg4,borderRadius:7,padding:"6px 10px",display:"flex",justifyContent:"space-between"}}>
+          <span style={{fontSize:11,color:C.ok,fontWeight:700}}>✓ {sn(real.w)} in {real.g}</span>
+          <span style={{color:bg.c,fontWeight:900,fontSize:14}}>+{sc.p}</span>
+        </div>}
+      </div>
+    );
+  };
+
   return(
     <div>
       <h2 style={{margin:"0 0 4px",fontWeight:900,fontFamily:"Georgia,serif",fontSize:22}}>My Playoff Picks</h2>
       <p style={{margin:"0 0 18px",color:C.t3,fontSize:13}}>Each round unlocks after the previous one ends.</p>
+
       {/* Round tabs */}
       <div style={{display:"flex",gap:6,marginBottom:20,flexWrap:"wrap"}}>
         {ROUNDS.map((r,i)=>{
@@ -337,41 +387,39 @@ function Picks({me,res,cfg,onSave,bettingOpen}){
           </button>;
         })}
       </div>
-      {/* Series */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:12,marginBottom:24}}>
-        {roundSeries.map(s=>{
-          const pred=draft[s.id]||{};
-          const real=res.po?.[s.id];
-          const sc=scoreS(pred,real,roundPts);
-          const bg=BG[sc.t];
-          return(
-            <div key={s.id} style={{background:sc.t!=="pending"?bg.bg:C.bg2,border:`1px solid ${sc.t!=="pending"?bg.c:C.bdL}`,borderRadius:14,padding:16}}>
-              <div style={{fontSize:10,fontWeight:800,color:C.acc,textTransform:"uppercase",letterSpacing:"1px",marginBottom:10}}>{s.conf==="E"?"East":"West"} · {ROUNDS.find(r=>r.k===s.r).l}</div>
-              {/* VS */}
-              <div style={{display:"flex",background:C.bg3,borderRadius:10,overflow:"hidden",marginBottom:10}}>
-                {[{k:s.t1},{k:s.t2}].map(({k},idx)=>{
-                  const isSel=pred.w===k;
-                  return <button key={k} onClick={()=>setPred(s.id,"w",k)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"10px 6px",border:"none",cursor:"pointer",background:isSel?`linear-gradient(${idx===0?"135deg":"225deg"},rgba(249,115,22,.2),transparent)`:"transparent",outline:isSel?`2px solid ${C.acc}`:"none",outlineOffset:-2,position:"relative"}}>
-                    <Logo abbr={k} size={40}/>
-                    <div style={{fontSize:10,fontWeight:700,color:isSel?C.acc:C.t2,marginTop:5,textAlign:"center",lineHeight:1.2}}>{sn(k)}</div>
-                    {isSel&&<div style={{fontSize:9,color:C.acc,fontWeight:800}}>✓ PICKED</div>}
-                    {idx===0&&<div style={{position:"absolute",right:0,top:"50%",transform:"translateY(-50%)",fontSize:9,color:C.t3,fontWeight:700}}>vs</div>}
-                  </button>;
-                })}
-              </div>
-              {/* Games */}
-              <div style={{display:"flex",alignItems:"center",gap:5}}>
-                <span style={{fontSize:11,color:C.t3,marginRight:2}}>Games:</span>
-                {[4,5,6,7].map(g=><button key={g} onClick={()=>setPred(s.id,"g",g)} style={{width:30,height:30,border:`1px solid ${pred.g===g?C.acc:C.bd}`,borderRadius:7,background:pred.g===g?C.aD:"transparent",color:pred.g===g?C.acc:C.t3,fontWeight:700,cursor:"pointer",fontSize:12}}>{g}</button>)}
-              </div>
-              {cfg.rPo&&real?.w&&<div style={{marginTop:8,background:C.bg4,borderRadius:7,padding:"6px 10px",display:"flex",justifyContent:"space-between"}}>
-                <span style={{fontSize:11,color:C.ok,fontWeight:700}}>✓ {sn(real.w)} in {real.g}</span>
-                <span style={{color:bg.c,fontWeight:900,fontSize:14}}>+{sc.p}</span>
-              </div>}
+
+      {/* Finals: single centered series */}
+      {activeR==="finals"&&finalsSeries.length>0&&(
+        <div style={{maxWidth:340,margin:"0 auto 24px"}}>
+          <div style={{fontSize:10,fontWeight:800,color:C.acc,textTransform:"uppercase",letterSpacing:"1.5px",marginBottom:10,textAlign:"center"}}>🏆 NBA Finals</div>
+          {finalsSeries.map(s=><SeriesCard key={s.id} s={s}/>)}
+        </div>
+      )}
+
+      {/* East / West two-column layout */}
+      {activeR!=="finals"&&(
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20,marginBottom:24}}>
+          {/* East */}
+          <div>
+            <div style={{fontSize:10,fontWeight:800,color:"#60a5fa",textTransform:"uppercase",letterSpacing:"1.5px",marginBottom:10,display:"flex",alignItems:"center",gap:6}}>
+              <span style={{background:"rgba(96,165,250,.15)",border:"1px solid rgba(96,165,250,.3)",borderRadius:5,padding:"2px 7px"}}>Eastern Conference</span>
             </div>
-          );
-        })}
-      </div>
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {eastSeries.map(s=><SeriesCard key={s.id} s={s}/>)}
+            </div>
+          </div>
+          {/* West */}
+          <div>
+            <div style={{fontSize:10,fontWeight:800,color:"#f97316",textTransform:"uppercase",letterSpacing:"1.5px",marginBottom:10,display:"flex",alignItems:"center",gap:6}}>
+              <span style={{background:"rgba(249,115,22,.12)",border:"1px solid rgba(249,115,22,.3)",borderRadius:5,padding:"2px 7px"}}>Western Conference</span>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {westSeries.map(s=><SeriesCard key={s.id} s={s}/>)}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Champion - all 30 teams */}
       <div style={{background:`rgba(249,115,22,.07)`,border:`1px solid rgba(249,115,22,.25)`,borderRadius:16,padding:20,marginBottom:16}}>
         <div style={{textAlign:"center",marginBottom:14}}><div style={{fontSize:28,marginBottom:4}}>🏆</div><div style={{fontWeight:900,fontSize:16}}>NBA Champion Pick</div><div style={{color:C.t3,fontSize:12}}>All 30 teams · +10 pts</div></div>
@@ -387,21 +435,31 @@ function Picks({me,res,cfg,onSave,bettingOpen}){
         ))}
         {champ&&<div style={{textAlign:"center",color:C.acc,fontWeight:700,fontSize:13,marginTop:6,display:"flex",alignItems:"center",justifyContent:"center",gap:6}}><Logo abbr={champ} size={20}/>🏆 {T[champ]?.n}</div>}
       </div>
-      {/* Finals MVP */}
-      <div style={{background:`rgba(56,189,248,.07)`,border:`1px solid rgba(56,189,248,.25)`,borderRadius:16,padding:20,marginBottom:24}}>
-        <div style={{textAlign:"center",marginBottom:14}}><div style={{fontSize:28,marginBottom:4}}>⭐</div><div style={{fontWeight:900,fontSize:16}}>Finals MVP Pick</div><div style={{color:C.t3,fontSize:12}}>+8 pts if correct</div></div>
-        <div style={{display:"flex",flexWrap:"wrap",gap:6,justifyContent:"center"}}>
-          {MVPS.map(m=>{
-            const isSel=mvp===m.id;
-            return <button key={m.id} onClick={()=>setMvp(isSel?"":m.id)} style={{display:"flex",alignItems:"center",gap:7,padding:"7px 12px",border:`2px solid ${isSel?C.ai:C.bd}`,borderRadius:10,background:isSel?"rgba(56,189,248,.12)":C.bg2,cursor:"pointer",color:isSel?C.ai:C.t2,fontWeight:isSel?800:500,fontSize:12}}>
-              <Logo abbr={m.t} size={20}/>
-              <div style={{textAlign:"left"}}><div style={{fontWeight:700,lineHeight:1.1}}>{m.n}</div><div style={{fontSize:10,color:isSel?C.ai:C.t3}}>{T[m.t]?.a}</div></div>
-              {isSel&&<span>⭐</span>}
-            </button>;
-          })}
+
+      {/* Finals MVP — only visible when Finals round is open */}
+      {finalsOpen?(
+        <div style={{background:`rgba(56,189,248,.07)`,border:`1px solid rgba(56,189,248,.25)`,borderRadius:16,padding:20,marginBottom:24}}>
+          <div style={{textAlign:"center",marginBottom:14}}><div style={{fontSize:28,marginBottom:4}}>⭐</div><div style={{fontWeight:900,fontSize:16}}>Finals MVP Pick</div><div style={{color:C.t3,fontSize:12}}>+8 pts if correct</div></div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6,justifyContent:"center"}}>
+            {MVPS.map(m=>{
+              const isSel=mvp===m.id;
+              return <button key={m.id} onClick={()=>setMvp(isSel?"":m.id)} style={{display:"flex",alignItems:"center",gap:7,padding:"7px 12px",border:`2px solid ${isSel?C.ai:C.bd}`,borderRadius:10,background:isSel?"rgba(56,189,248,.12)":C.bg2,cursor:"pointer",color:isSel?C.ai:C.t2,fontWeight:isSel?800:500,fontSize:12}}>
+                <Logo abbr={m.t} size={20}/>
+                <div style={{textAlign:"left"}}><div style={{fontWeight:700,lineHeight:1.1}}>{m.n}</div><div style={{fontSize:10,color:isSel?C.ai:C.t3}}>{T[m.t]?.a}</div></div>
+                {isSel&&<span>⭐</span>}
+              </button>;
+            })}
+          </div>
+          {mvp&&<div style={{textAlign:"center",color:C.ai,fontWeight:700,fontSize:13,marginTop:8}}>⭐ {MVPS.find(m=>m.id===mvp)?.n}</div>}
         </div>
-        {mvp&&<div style={{textAlign:"center",color:C.ai,fontWeight:700,fontSize:13,marginTop:8}}>⭐ {MVPS.find(m=>m.id===mvp)?.n}</div>}
-      </div>
+      ):(
+        <div style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:16,padding:18,marginBottom:24,textAlign:"center"}}>
+          <div style={{fontSize:22,marginBottom:6}}>⭐</div>
+          <div style={{fontWeight:700,fontSize:14,color:C.t2}}>Finals MVP Pick</div>
+          <div style={{color:C.t3,fontSize:12,marginTop:4}}>🔒 Unlocks when the NBA Finals round opens</div>
+        </div>
+      )}
+
       <div style={{textAlign:"center"}}>
         {bettingOpen
           ?<><button onClick={doSave} style={{...btn.p,padding:"13px 44px",fontSize:15}}>{saved?"✓ Picks Saved!":"Save My Predictions"}</button><p style={{color:C.t3,fontSize:11,marginTop:8}}>Predictions lock at the deadline set by admin.</p></>
@@ -584,7 +642,7 @@ function Prizes({cfg}){
           <div style={{fontSize:44,marginBottom:8}}>{p.m}</div>
           <div style={{fontWeight:900,fontSize:20,color:p.c,marginBottom:4}}>{p.t}</div>
           <div style={{fontSize:11,color:C.t3,marginBottom:14}}>#{p.r} place</div>
-          <div style={{background:C.bg1,border:`1px solid ${p.c}44`,borderRadius:10,padding:"12px 14px"}}><div style={{fontSize:9,color:C.t3,textTransform:"uppercase",letterSpacing:"1px",marginBottom:3}}>Prize</div><div style={{fontWeight:800,fontSize:16,color:p.c}}>TBD by Admin</div></div>
+          <div style={{background:C.bg1,border:`1px solid ${p.c}44`,borderRadius:10,padding:"12px 14px"}}><div style={{fontSize:9,color:C.t3,textTransform:"uppercase",letterSpacing:"1px",marginBottom:3}}>Prize</div><div style={{fontWeight:800,fontSize:16,color:p.c}}>{cfg.prizes?.[`p${p.r}`]||"TBD by Admin"}</div></div>
         </div>)}
       </div>
       <div style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:14,padding:18}}>
@@ -609,7 +667,6 @@ function Board({scores,myId,cfg}){
   return(
     <div>
       {!rev&&<div style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:10,padding:"12px 16px",marginBottom:20,textAlign:"center",color:C.t3,fontSize:13}}>🔒 Scores reveal when admin opens the playoffs</div>}
-      {/* Podium */}
       {scores.length>=2&&rev&&<div style={{marginBottom:28}}>
         <div style={{fontSize:10,fontWeight:800,color:C.t3,textTransform:"uppercase",letterSpacing:"2px",marginBottom:16,textAlign:"center"}}>🏆 Podium</div>
         <div style={{display:"flex",alignItems:"flex-end",justifyContent:"center",gap:8}}>
@@ -625,7 +682,6 @@ function Board({scores,myId,cfg}){
           })}
         </div>
       </div>}
-      {/* Table */}
       <div style={{display:"flex",flexDirection:"column",gap:7}}>
         {scores.map((s,i)=>{
           const isMe=s.id===myId, isTop=i<3;
@@ -754,13 +810,14 @@ function AllPicks({all,res,cfg}){
 }
 
 // ─── ADMIN ───────────────────────────────────────────────────────────────────
-function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logout}){
+function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logout,removeUser}){
   const [tab,setTab]=useState("rounds");
   const [editSid,setEditSid]=useState(null);
   const [ew,setEw]=useState("");
   const [eg,setEg]=useState("");
   const [champIn,setChampIn]=useState(res.champ||"");
   const [mvpIn,setMvpIn]=useState(res.mvp||"");
+  const [confirmRemove,setConfirmRemove]=useState(null);
   // Settings state
   const [newPw,setNewPw]=useState(""); const [newPw2,setNewPw2]=useState(""); const [pwMsg,setPwMsg]=useState("");
   const [deadline,setDeadline]=useState(cfg.deadline?cfg.deadline.slice(0,16):"");
@@ -887,7 +944,8 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
             {users.filter(u=>!u.isAI).map((u,i)=>{
               const pf=Object.values(u.po||{}).filter(p=>p?.w).length;
               const pif=Object.values(u.pi||{}).filter(p=>p?.w).length;
-              return <div key={u.id} style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderLeft:`4px solid ${PC[i%PC.length]}`,borderRadius:9,padding:"11px 14px",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+              const isConfirm=confirmRemove===u.id;
+              return <div key={u.id} style={{background:C.bg2,border:`1px solid ${isConfirm?"rgba(248,113,113,.4)":C.bdL}`,borderLeft:`4px solid ${isConfirm?C.er:PC[i%PC.length]}`,borderRadius:9,padding:"11px 14px",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
                 <Avatar user={u} size={38} idx={i}/>
                 <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14}}>{u.name}</div><div style={{color:C.t3,fontSize:11}}>{u.email}</div></div>
                 <div style={{textAlign:"right",fontSize:11,color:C.t2}}>
@@ -895,6 +953,15 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
                   {u.champ&&<div style={{color:C.acc}}>🏆 {T[u.champ]?.a}</div>}
                   {u.mvp&&<div style={{color:C.ai}}>⭐ {MVPS.find(m=>m.id===u.mvp)?.n?.split(" ")[0]}</div>}
                 </div>
+                {isConfirm?(
+                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                    <span style={{fontSize:11,color:C.er,fontWeight:700}}>Remove?</span>
+                    <button onClick={()=>{removeUser(u.id);setConfirmRemove(null);}} style={{...btn.danger,fontWeight:800}}>Yes</button>
+                    <button onClick={()=>setConfirmRemove(null)} style={btn.g}>No</button>
+                  </div>
+                ):(
+                  <button onClick={()=>setConfirmRemove(u.id)} style={btn.danger}>🗑 Remove</button>
+                )}
               </div>;
             })}
             <div style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderLeft:`4px solid ${C.ai}`,borderRadius:9,padding:"11px 14px",display:"flex",alignItems:"center",gap:10}}>
@@ -918,21 +985,15 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
 
         {tab==="settings"&&<div>
           <h3 style={{fontWeight:900,marginBottom:20}}>League Settings</h3>
-
-          {/* League name */}
           <Section title="🏆 League Name">
             <input value={leagueName} onChange={e=>setLeagueName(e.target.value)} style={{...inp,marginBottom:0}} placeholder="NBA Playoffs 2026"/>
           </Section>
-
-          {/* Betting deadline */}
           <Section title="⏰ Betting Deadline">
             <p style={{color:C.t3,fontSize:12,margin:"0 0 8px"}}>After this date/time, users can no longer save predictions.</p>
             <input type="datetime-local" value={deadline} onChange={e=>setDeadline(e.target.value)}
               style={{...inp,marginBottom:0,colorScheme:"dark"}}/>
             {cfg.deadline&&<p style={{color:C.wn,fontSize:11,marginTop:6}}>⏰ Current deadline: {new Date(cfg.deadline).toLocaleString()}</p>}
           </Section>
-
-          {/* Prizes */}
           <Section title="🎁 Prize Descriptions">
             <p style={{color:C.t3,fontSize:12,margin:"0 0 10px"}}>These appear on the Prizes page for all users.</p>
             {[["p1","🥇 1st Place"],["p2","🥈 2nd Place"],["p3","🥉 3rd Place"]].map(([k,label])=>(
@@ -943,12 +1004,9 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
               </div>
             ))}
           </Section>
-
           <button onClick={saveSettings} style={{...btn.p,marginBottom:12}}>
             {settingsSaved?"✓ Settings Saved!":"Save Settings"}
           </button>
-
-          {/* Admin password */}
           <Section title="🔑 Change Admin Password">
             <p style={{color:C.t3,fontSize:12,margin:"0 0 10px"}}>Only you know this. Make it something only you'd guess.</p>
             <input type="password" value={newPw} onChange={e=>setNewPw(e.target.value)}
