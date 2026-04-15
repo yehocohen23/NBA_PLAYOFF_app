@@ -59,11 +59,12 @@ CREATE POLICY "allow_all_results"    ON results    FOR ALL USING (true) WITH CHE
 CREATE POLICY "allow_all_app_config" ON app_config FOR ALL USING (true) WITH CHECK (true);
 
 -- ─── 5. Realtime ─────────────────────────────────────────
--- הפעלת Realtime על טבלת results ו-app_config
--- (עשה זאת דרך Dashboard: Database → Replication → הפעל על results ו-app_config)
+-- הפעלת Realtime על כל הטבלאות
+-- (עשה זאת דרך Dashboard: Database → Replication → הפעל על כל הטבלאות)
 -- או הרץ:
 ALTER PUBLICATION supabase_realtime ADD TABLE results;
 ALTER PUBLICATION supabase_realtime ADD TABLE app_config;
+ALTER PUBLICATION supabase_realtime ADD TABLE users;
 
 -- ═══════════════════════════════════════════════════════════
 --  אחרי הרצת הSQL, צריך לעדכן ב-App.jsx:
