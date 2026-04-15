@@ -157,19 +157,25 @@ const sv=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch{}};
 
 // ─── COLORS ─────────────────────────────────────────────────────────────────
 const C={
-  bg0:"#04080f",bg1:"#090f1c",bg2:"#0f1829",bg3:"#162034",bg4:"#1c2840",
-  acc:"#f97316",aD:"rgba(249,115,22,.12)",
-  bd:"#1c2a3e",bdL:"#243347",
-  t1:"#eef2f7",t2:"#8fa3b8",t3:"#3d5166",
+  bg0:"#03060e",bg1:"#07101f",bg2:"#0c1628",bg3:"#111e33",bg4:"#182540",
+  acc:"#f97316",acc2:"#fb923c",aD:"rgba(249,115,22,.13)",
+  bd:"#1a2840",bdL:"#1f3050",
+  t1:"#f0f4fa",t2:"#90a8c0",t3:"#384f68",
   ok:"#34d399",okB:"rgba(52,211,153,.1)",
   wn:"#fbbf24",wnB:"rgba(251,191,36,.08)",
   er:"#f87171",erB:"rgba(248,113,113,.08)",
   ai:"#38bdf8",
-  gold:"#FFD700",silver:"#C0C0C0",bronze:"#CD7F32",
+  gold:"#FFD700",silver:"#C8D0D8",bronze:"#CD7F32",
+  g1:"linear-gradient(135deg,#f97316,#dc6004)",
+  g2:"linear-gradient(135deg,#34d399,#059669)",
+  gHdr:"linear-gradient(90deg,#07101f 0%,#0c1628 100%)",
 };
 const BG={exact:{c:C.ok,bg:C.okB},correct:{c:C.wn,bg:C.wnB},wrong:{c:C.er,bg:C.erB},pending:{c:C.t3,bg:"transparent"}};
 const PC=["#f97316","#a78bfa","#34d399","#60a5fa","#f472b6","#facc15","#4ade80","#e879f9","#38bdf8","#fb923c","#c084fc","#86efac"];
 const pcol=(u,i)=>u?.isAI?C.ai:PC[i%PC.length];
+const MEDAL_C=[C.gold,C.silver,C.bronze];
+const MEDAL_G=['rgba(255,215,0,.22)','rgba(200,208,216,.18)','rgba(205,127,50,.18)'];
+const MEDAL_E=["🥇","🥈","🥉"];
 
 // ─── ESPN / NBA SCHEDULE API ─────────────────────────────────────────────────
 const ESPN_SB='https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard';
@@ -283,12 +289,12 @@ const inp={width:"100%",padding:"10px 13px",border:`1px solid ${C.bd}`,borderRad
 const sel={padding:"8px 10px",border:`1px solid ${C.bd}`,borderRadius:8,
   background:C.bg0,color:C.t1,fontSize:13,cursor:"pointer",outline:"none"};
 const btn={
-  p:{padding:"10px 20px",border:"none",borderRadius:10,background:"linear-gradient(135deg,#f97316,#dc6004)",color:"#fff",fontWeight:800,cursor:"pointer",fontSize:14},
-  s:{padding:"10px 20px",border:"none",borderRadius:10,background:"linear-gradient(135deg,#34d399,#059669)",color:"#fff",fontWeight:800,cursor:"pointer",fontSize:14},
-  w:{padding:"10px 18px",border:"1px solid rgba(251,191,36,.4)",borderRadius:10,background:"rgba(251,191,36,.08)",color:"#fbbf24",fontWeight:800,cursor:"pointer",fontSize:13},
-  g:{padding:"8px 14px",border:`1px solid ${C.bd}`,borderRadius:9,background:"transparent",color:C.t2,fontWeight:700,cursor:"pointer",fontSize:13},
-  a:{padding:"8px 14px",border:`1px solid #f97316`,borderRadius:8,background:"rgba(249,115,22,.12)",color:"#f97316",fontWeight:700,cursor:"pointer",fontSize:13},
-  danger:{padding:"6px 12px",border:"1px solid rgba(248,113,113,.4)",borderRadius:8,background:"rgba(248,113,113,.08)",color:"#f87171",fontWeight:700,cursor:"pointer",fontSize:12},
+  p:{padding:"11px 22px",border:"none",borderRadius:11,background:"linear-gradient(135deg,#f97316,#dc6004)",color:"#fff",fontWeight:800,cursor:"pointer",fontSize:14,boxShadow:"0 4px 16px rgba(249,115,22,.35)",letterSpacing:.3},
+  s:{padding:"11px 22px",border:"none",borderRadius:11,background:"linear-gradient(135deg,#34d399,#059669)",color:"#fff",fontWeight:800,cursor:"pointer",fontSize:14,boxShadow:"0 4px 14px rgba(52,211,153,.3)"},
+  w:{padding:"10px 18px",border:"1px solid rgba(251,191,36,.4)",borderRadius:10,background:"rgba(251,191,36,.09)",color:"#fbbf24",fontWeight:800,cursor:"pointer",fontSize:13},
+  g:{padding:"8px 15px",border:`1px solid ${C.bdL}`,borderRadius:9,background:"rgba(255,255,255,.04)",color:C.t2,fontWeight:700,cursor:"pointer",fontSize:13},
+  a:{padding:"9px 16px",border:`1px solid rgba(249,115,22,.5)`,borderRadius:9,background:"rgba(249,115,22,.1)",color:"#f97316",fontWeight:700,cursor:"pointer",fontSize:13},
+  danger:{padding:"6px 12px",border:"1px solid rgba(248,113,113,.4)",borderRadius:8,background:"rgba(248,113,113,.07)",color:"#f87171",fontWeight:700,cursor:"pointer",fontSize:12},
 };
 
 // ─── APP ROOT ────────────────────────────────────────────────────────────────
@@ -420,10 +426,18 @@ export default function App(){
 
   // ── Loading screen ────────────────────────────────────────────────────────
   if(loading) return(
-    <div style={{minHeight:"100vh",background:C.bg0,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}>
-      <div style={{fontSize:52}}>🏀</div>
-      <div style={{color:C.t2,fontSize:15,fontWeight:700}}>Loading league data…</div>
-      <div style={{color:C.t3,fontSize:12}}>Connecting to database</div>
+    <div style={{minHeight:"100vh",background:C.bg0,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:20}}>
+      <div style={{position:"relative"}}>
+        <div style={{fontSize:64,filter:"drop-shadow(0 0 24px rgba(249,115,22,.6))"}}>🏀</div>
+        <div style={{position:"absolute",inset:-8,borderRadius:"50%",border:"2px solid rgba(249,115,22,.2)",animation:"spin 2s linear infinite"}}/>
+      </div>
+      <div style={{textAlign:"center"}}>
+        <div style={{color:C.t1,fontSize:18,fontWeight:800,fontFamily:"Georgia,serif",letterSpacing:"-0.5px"}}>NBA Playoffs 2026</div>
+        <div style={{color:C.t3,fontSize:12,marginTop:4,letterSpacing:"2px",textTransform:"uppercase"}}>Loading League Data…</div>
+      </div>
+      <div style={{display:"flex",gap:6}}>
+        {[0,1,2].map(i=><div key={i} style={{width:8,height:8,borderRadius:"50%",background:C.acc,opacity:.4+(i*.3)}}/>)}
+      </div>
     </div>
   );
 
@@ -443,24 +457,39 @@ function Auth({onLogin,onReg,leagueName}){
   const [name,setName]=useState(""); const [email,setEmail]=useState(""); const [pw,setPw]=useState(""); const [err,setErr]=useState("");
   const go=()=>{setErr("");const e=mode==="reg"?onReg(name.trim(),email.trim(),pw):onLogin(email.trim(),pw);if(e)setErr(e);};
   return(
-    <div style={{minHeight:"100vh",background:C.bg0,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
-      <div style={{background:C.bg1,border:`1px solid ${C.bd}`,borderRadius:22,padding:"40px 36px",width:"100%",maxWidth:380,boxShadow:"0 32px 80px #000b"}}>
+    <div style={{minHeight:"100vh",background:`radial-gradient(ellipse at 30% 20%,rgba(249,115,22,.12) 0%,transparent 60%), radial-gradient(ellipse at 80% 80%,rgba(56,189,248,.07) 0%,transparent 50%),${C.bg0}`,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div style={{width:"100%",maxWidth:400}}>
+        {/* Logo / branding */}
         <div style={{textAlign:"center",marginBottom:28}}>
-          <div style={{fontSize:48,marginBottom:8}}>🏀</div>
-          <h1 style={{margin:0,fontSize:26,fontWeight:900,color:C.t1,fontFamily:"Georgia,serif",letterSpacing:"-1px"}}>{leagueName||"NBA Playoffs 2026"}</h1>
-          <p style={{margin:"4px 0 0",color:C.t3,fontSize:11,letterSpacing:"2.5px",textTransform:"uppercase"}}>Prediction League</p>
+          <div style={{fontSize:56,filter:"drop-shadow(0 0 28px rgba(249,115,22,.7))",marginBottom:12}}>🏀</div>
+          <h1 style={{margin:"0 0 4px",fontSize:28,fontWeight:900,color:C.t1,fontFamily:"Georgia,serif",letterSpacing:"-1px",
+            background:"linear-gradient(135deg,#fff 30%,#f97316 100%)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>
+            {leagueName||"NBA Playoffs 2026"}
+          </h1>
+          <p style={{margin:0,color:C.t3,fontSize:11,letterSpacing:"3px",textTransform:"uppercase"}}>Prediction League</p>
         </div>
-        <div style={{display:"flex",background:C.bg0,borderRadius:10,padding:4,marginBottom:20}}>
-          {[["login","Sign In"],["reg","Join League"]].map(([k,l])=>(
-            <button key={k} onClick={()=>{setMode(k);setErr("");}} style={{flex:1,padding:"9px",border:"none",cursor:"pointer",borderRadius:8,fontWeight:700,fontSize:14,background:mode===k?C.bg3:"transparent",color:mode===k?C.t1:C.t3}}>{l}</button>
-          ))}
+
+        {/* Card */}
+        <div style={{background:"linear-gradient(160deg,rgba(22,32,52,.95),rgba(11,20,36,.98))",border:"1px solid rgba(249,115,22,.15)",borderRadius:22,padding:"32px 28px",boxShadow:"0 32px 80px rgba(0,0,0,.7),0 0 0 1px rgba(255,255,255,.03)"}}>
+          {/* Tabs */}
+          <div style={{display:"flex",background:C.bg0,borderRadius:11,padding:4,marginBottom:22,gap:4}}>
+            {[["login","🔑 Sign In"],["reg","✨ Join League"]].map(([k,l])=>(
+              <button key={k} onClick={()=>{setMode(k);setErr("");}} style={{flex:1,padding:"10px",border:"none",cursor:"pointer",borderRadius:8,fontWeight:700,fontSize:13,
+                background:mode===k?"linear-gradient(135deg,rgba(249,115,22,.2),rgba(249,115,22,.08))":"transparent",
+                color:mode===k?C.acc:C.t3,
+                boxShadow:mode===k?"0 0 0 1px rgba(249,115,22,.3) inset":"none",
+                transition:"all .15s"}}>{l}</button>
+            ))}
+          </div>
+          {mode==="reg"&&<input style={{...inp,marginBottom:12}} placeholder="Your name" value={name} onChange={e=>setName(e.target.value)}/>}
+          <input style={{...inp,marginBottom:12}} placeholder="Email address" value={email} onChange={e=>setEmail(e.target.value)}/>
+          <input style={{...inp,marginBottom:err?8:20}} type="password" placeholder="Password" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()}/>
+          {err&&<div style={{background:C.erB,border:"1px solid rgba(248,113,113,.3)",borderRadius:8,padding:"8px 12px",color:C.er,fontSize:12,fontWeight:700,textAlign:"center",marginBottom:14}}>{err}</div>}
+          <button onClick={go} style={{...btn.p,width:"100%",padding:14,fontSize:15,borderRadius:12}}>
+            {mode==="login"?"Enter the League →":"Create Account →"}
+          </button>
+          <p style={{textAlign:"center",color:C.t3,fontSize:11,marginTop:16,marginBottom:0}}>Admin? Use email <code style={{color:C.acc,background:"rgba(249,115,22,.1)",padding:"1px 5px",borderRadius:4}}>admin</code></p>
         </div>
-        {mode==="reg"&&<input style={{...inp,marginBottom:12}} placeholder="Your name" value={name} onChange={e=>setName(e.target.value)}/>}
-        <input style={{...inp,marginBottom:12}} placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)}/>
-        <input style={{...inp,marginBottom:err?8:16}} type="password" placeholder="Password" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()}/>
-        {err&&<p style={{color:C.er,fontSize:13,margin:"0 0 12px",textAlign:"center"}}>{err}</p>}
-        <button onClick={go} style={{...btn.p,width:"100%",padding:13,fontSize:15}}>{mode==="login"?"Enter the League →":"Create Account →"}</button>
-        <p style={{textAlign:"center",color:C.t3,fontSize:11,marginTop:16}}>Are you the admin? Use email <code style={{color:C.acc}}>admin</code></p>
       </div>
     </div>
   );
@@ -498,22 +527,54 @@ function Main({me,all,res,cfg,bettingOpen,savePO,savePI,savePhoto,logout}){
   ];
   return(
     <div style={{minHeight:"100vh",background:C.bg0,color:C.t1,fontFamily:"'DM Sans','Segoe UI',sans-serif"}}>
-      <header style={{background:C.bg1,borderBottom:`1px solid ${C.bd}`,padding:"10px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap",position:"sticky",top:0,zIndex:50}}>
-        <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <span style={{fontSize:24}}>🏆</span>
-          <div><div style={{fontWeight:900,fontSize:15,fontFamily:"Georgia,serif"}}>NBA Playoffs 2026</div><div style={{fontSize:9,color:C.t3,letterSpacing:"2px",textTransform:"uppercase"}}>Prediction League</div></div>
+      {/* ── HEADER ── */}
+      <header style={{
+        background:"linear-gradient(90deg,#071222 0%,#0a1828 60%,#07101f 100%)",
+        borderBottom:`1px solid rgba(249,115,22,.18)`,
+        padding:"0 18px",height:58,
+        display:"flex",justifyContent:"space-between",alignItems:"center",
+        position:"sticky",top:0,zIndex:50,
+        boxShadow:"0 4px 24px rgba(0,0,0,.5)"
+      }}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <div style={{fontSize:26,filter:"drop-shadow(0 0 10px rgba(249,115,22,.7))"}}>🏆</div>
+          <div>
+            <div style={{fontWeight:900,fontSize:16,fontFamily:"Georgia,serif",letterSpacing:"-0.5px",
+              background:"linear-gradient(90deg,#fff 0%,#f97316 100%)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>
+              {cfg.leagueName||"NBA Playoffs 2026"}
+            </div>
+            <div style={{fontSize:9,color:C.t3,letterSpacing:"2.5px",textTransform:"uppercase",marginTop:1}}>Prediction League</div>
+          </div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <Avatar user={me} size={30} idx={scores.findIndex(s=>s.id===me.id)}/>
-          <div style={{textAlign:"right"}}><div style={{fontWeight:700,fontSize:13}}>{me.name}</div><div style={{fontSize:11}}><span style={{color:C.acc,fontWeight:800}}>{myS?.total??0}</span><span style={{color:C.t3}}> pts · #{myR}/{scores.length}</span></div></div>
-          <button onClick={logout} style={btn.g}>← Exit</button>
+          {/* My score badge */}
+          <div style={{background:"rgba(249,115,22,.1)",border:"1px solid rgba(249,115,22,.25)",borderRadius:10,padding:"5px 11px",textAlign:"right"}}>
+            <div style={{fontSize:10,color:C.t3,fontWeight:700}}>#{myR} · {me.name.split(" ")[0]}</div>
+            <div style={{fontSize:16,fontWeight:900,color:C.acc,lineHeight:1}}>{myS?.total??0} <span style={{fontSize:10,fontWeight:600,color:C.t3}}>pts</span></div>
+          </div>
+          <Avatar user={me} size={34} idx={scores.findIndex(s=>s.id===me.id)}/>
+          <button onClick={logout} style={{...btn.g,padding:"7px 12px",fontSize:12}}>Exit</button>
         </div>
       </header>
-      <nav style={{display:"flex",background:C.bg1,borderBottom:`1px solid ${C.bd}`,overflowX:"auto"}}>
-        {TABS.map(t=><button key={t.k} onClick={()=>setTab(t.k)} style={{padding:"10px 14px",border:"none",background:"transparent",color:tab===t.k?C.acc:C.t3,cursor:"pointer",fontSize:12,fontWeight:700,borderBottom:`2px solid ${tab===t.k?C.acc:"transparent"}`,whiteSpace:"nowrap"}}>{t.i} {t.l}</button>)}
+      {/* ── NAV ── */}
+      <nav style={{display:"flex",background:C.bg1,borderBottom:`1px solid ${C.bd}`,overflowX:"auto",scrollbarWidth:"none",msOverflowStyle:"none"}}>
+        {TABS.map(t=>(
+          <button key={t.k} onClick={()=>setTab(t.k)} style={{
+            padding:"0 14px",height:46,border:"none",background:"transparent",
+            color:tab===t.k?C.acc:C.t3,
+            cursor:"pointer",fontSize:12,fontWeight:tab===t.k?800:600,
+            borderBottom:`2.5px solid ${tab===t.k?C.acc:"transparent"}`,
+            whiteSpace:"nowrap",display:"flex",alignItems:"center",gap:5,
+            boxShadow:tab===t.k?"inset 0 -10px 20px rgba(249,115,22,.06)":"none",
+            transition:"color .15s,border-color .15s",
+          }}>
+            <span style={{fontSize:14}}>{t.i}</span>
+            <span style={{display:window.innerWidth<480?"none":"inline"}}>{t.l}</span>
+          </button>
+        ))}
       </nav>
-      {!bettingOpen&&<div style={{background:"rgba(248,113,113,.1)",borderBottom:"1px solid rgba(248,113,113,.3)",padding:"8px 18px",textAlign:"center",color:C.er,fontSize:12,fontWeight:700}}>🔒 Betting is closed — predictions are locked</div>}
-      <main style={{maxWidth:980,margin:"0 auto",padding:"20px 14px 70px"}}>
+      {!bettingOpen&&<div style={{background:"rgba(248,113,113,.08)",borderBottom:"1px solid rgba(248,113,113,.25)",padding:"7px 18px",textAlign:"center",color:C.er,fontSize:12,fontWeight:700,letterSpacing:.3}}>🔒 Betting closed — predictions are locked</div>}
+      <main style={{maxWidth:980,margin:"0 auto",padding:"22px 14px 80px"}}>
         {tab==="picks"   &&<Picks   me={me} res={res} cfg={cfg} onSave={savePO} bettingOpen={bettingOpen} finalsOpen={finalsOpen} getRoundDeadline={getRoundDeadline} roundBettingOpen={roundBettingOpen}/>}
         {tab==="playin"  &&<Playin  me={me} res={res} cfg={cfg} onSave={savePI} bettingOpen={bettingOpen} piDeadline={getRoundDeadline('pi')} roundBettingOpen={roundBettingOpen}/>}
         {tab==="games"   &&<Games/>}
@@ -1065,55 +1126,165 @@ function Prizes({cfg}){
 // ─── BOARD ───────────────────────────────────────────────────────────────────
 function Board({scores,myId,cfg}){
   const rev=cfg.rPo||cfg.rPi;
-  const [gold,silver,bronze]=scores;
-  const podium=[silver,gold,bronze].filter(Boolean);
-  const podiumH=[140,190,110];
-  const podiumRanks=[2,1,3];
-  const medalEmoji=["🥇","🥈","🥉"];
-  const medalC=[C.gold,C.silver,C.bronze];
   const rPts=(u,r)=>SERIES.filter(s=>s.r===r).reduce((sum,s)=>sum+(u.bd?.[s.id]?.p||0),0);
   const piPts=(u)=>PLAYIN.reduce((sum,m)=>sum+(u.bd?.[m.id]?.p||0),0);
+  // Podium order: 2nd left, 1st center, 3rd right
+  const podium=scores.length>=2?[scores[1],scores[0],scores[2]].filter(Boolean):[];
+  const pConfig=[{rank:2,h:110,sz:46},{rank:1,h:158,sz:62},{rank:3,h:84,sz:38}];
+  const maxPts=scores[0]?.total||1;
   return(
     <div>
-      {!rev&&<div style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:10,padding:"12px 16px",marginBottom:20,textAlign:"center",color:C.t3,fontSize:13}}>🔒 Scores reveal when admin opens the playoffs</div>}
-      {scores.length>=2&&rev&&<div style={{marginBottom:28}}>
-        <div style={{fontSize:10,fontWeight:800,color:C.t3,textTransform:"uppercase",letterSpacing:"2px",marginBottom:16,textAlign:"center"}}>🏆 Podium</div>
-        <div style={{display:"flex",alignItems:"flex-end",justifyContent:"center",gap:8}}>
-          {podium.map((s,vi)=>{
-            const rr=podiumRanks[vi]; const col=medalC[rr-1];
-            return <div key={s.id} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:5}}>
-              <Avatar user={s} size={vi===1?52:40} idx={scores.indexOf(s)}/>
-              <div style={{fontSize:vi===1?32:24}}>{medalEmoji[rr-1]}</div>
-              <div style={{fontSize:10,fontWeight:800,color:col,textAlign:"center",maxWidth:80,lineHeight:1.2}}>{s.name}{s.id===myId?" (you)":""}</div>
-              <div style={{fontSize:vi===1?18:14,fontWeight:900,color:col}}>{s.total}</div>
-              <div style={{width:vi===1?88:70,height:podiumH[vi],background:`linear-gradient(to top,${col}28,${col}0a)`,border:`2px solid ${col}44`,borderRadius:"8px 8px 0 0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,color:col}}>{rr}</div>
-            </div>;
+      {/* ── Page title ── */}
+      <div style={{marginBottom:22}}>
+        <h2 style={{margin:"0 0 3px",fontWeight:900,fontFamily:"Georgia,serif",fontSize:22,
+          background:"linear-gradient(90deg,#fff,#f97316)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>
+          🏅 Standings
+        </h2>
+        <p style={{margin:0,color:C.t3,fontSize:12}}>{scores.length} participants · Live scores{!rev?" hidden until admin reveals":""}</p>
+      </div>
+
+      {/* ── LOCKED STATE ── */}
+      {!rev&&(
+        <div style={{background:"linear-gradient(135deg,rgba(249,115,22,.07),rgba(249,115,22,.03))",border:"1px solid rgba(249,115,22,.2)",borderRadius:14,padding:"20px 24px",textAlign:"center",marginBottom:20}}>
+          <div style={{fontSize:32,marginBottom:8}}>🔒</div>
+          <div style={{fontWeight:800,fontSize:14,color:C.t2,marginBottom:4}}>Scores are hidden</div>
+          <div style={{color:C.t3,fontSize:12}}>The admin will reveal the leaderboard once playoffs begin.</div>
+        </div>
+      )}
+
+      {/* ── PODIUM (top 3) ── */}
+      {rev&&scores.length>=2&&(
+        <div style={{background:"linear-gradient(180deg,rgba(249,115,22,.06) 0%,transparent 100%)",border:"1px solid rgba(249,115,22,.12)",borderRadius:20,padding:"24px 16px 0",marginBottom:24,overflow:"hidden"}}>
+          <div style={{textAlign:"center",fontSize:10,fontWeight:800,color:C.acc,letterSpacing:"3px",textTransform:"uppercase",marginBottom:18}}>🏆 Leaderboard Podium</div>
+          <div style={{display:"flex",alignItems:"flex-end",justifyContent:"center",gap:12}}>
+            {podium.map((s,vi)=>{
+              const rr=pConfig[vi].rank-1;
+              const col=MEDAL_C[rr];
+              const glow=MEDAL_G[rr];
+              const isFirst=pConfig[vi].rank===1;
+              const h=pConfig[vi].h;
+              const sz=pConfig[vi].sz;
+              return(
+                <div key={s.id} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:0}}>
+                  {/* Info above platform */}
+                  <div style={{textAlign:"center",marginBottom:10,padding:"0 4px",maxWidth:110}}>
+                    <div style={{position:"relative",display:"inline-block"}}>
+                      <Avatar user={s} size={sz} idx={scores.indexOf(s)}/>
+                      <div style={{position:"absolute",bottom:-4,right:-4,fontSize:isFirst?18:14,filter:`drop-shadow(0 0 4px ${col})`}}>{MEDAL_E[rr]}</div>
+                    </div>
+                    <div style={{fontSize:isFirst?13:11,fontWeight:900,color:col,marginTop:8,lineHeight:1.2}}>{s.name}{s.id===myId?" 👤":""}</div>
+                    <div style={{fontSize:isFirst?26:20,fontWeight:900,color:col,lineHeight:1.1}}>{s.total}</div>
+                    <div style={{fontSize:9,color:C.t3,marginTop:1}}>pts</div>
+                  </div>
+                  {/* Platform block */}
+                  <div style={{
+                    width:isFirst?96:74,height:h,
+                    background:`linear-gradient(to bottom,${col}28,${col}06)`,
+                    border:`1.5px solid ${col}40`,
+                    borderRadius:"10px 10px 0 0",
+                    boxShadow:`0 -6px 30px ${glow},0 0 0 1px ${col}10`,
+                    display:"flex",alignItems:"center",justifyContent:"center",
+                  }}>
+                    <div style={{fontSize:isFirst?28:22,opacity:.5}}>{pConfig[vi].rank}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── FULL LEADERBOARD TABLE ── */}
+      {rev&&(
+        <div>
+          {/* Column headers */}
+          <div style={{display:"grid",gridTemplateColumns:"36px 38px 1fr 34px 34px 34px 34px 34px 34px 44px",alignItems:"center",padding:"6px 14px",marginBottom:5,fontSize:9,color:C.t3,fontWeight:800,textTransform:"uppercase",letterSpacing:"1px"}}>
+            <div>#</div><div/>
+            <div>Player</div>
+            <div style={{textAlign:"center"}}>⚡PI</div>
+            {ROUNDS.map(r=><div key={r.k} style={{textAlign:"center"}}>{r.s}</div>)}
+            <div style={{textAlign:"center"}}>🏆</div>
+            <div style={{textAlign:"right",color:C.acc}}>Total</div>
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:5}}>
+            {scores.map((s,i)=>{
+              const isMe=s.id===myId,isTop=i<3;
+              const col=isTop?MEDAL_C[i]:s.isAI?C.ai:PC[i%PC.length];
+              const mGlow=isTop?MEDAL_G[i]:"transparent";
+              const pi=piPts(s);
+              const r1=rPts(s,"r1"),r2=rPts(s,"r2"),r3=rPts(s,"r3"),rf=rPts(s,"finals");
+              const ch=s.bd?.champ?.p||0;
+              const pct=s.total/maxPts;
+              return(
+                <div key={s.id} style={{
+                  background:isMe?"rgba(249,115,22,.08)":isTop?`${MEDAL_C[i]}07`:C.bg2,
+                  border:`1px solid ${isMe?"rgba(249,115,22,.35)":isTop?MEDAL_C[i]+"25":C.bdL}`,
+                  borderLeft:`3px solid ${col}`,
+                  borderRadius:11,padding:"0 14px",overflow:"hidden",
+                  boxShadow:isMe?"0 0 24px rgba(249,115,22,.12)":isTop?`0 0 18px ${mGlow}`:"none",
+                }}>
+                  {/* Points progress bar */}
+                  <div style={{height:2,background:C.bg3,marginBottom:0,borderRadius:0}}>
+                    <div style={{height:"100%",width:`${pct*100}%`,background:`linear-gradient(90deg,${col},${col}88)`,borderRadius:1,transition:"width .6s"}}/>
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"36px 38px 1fr 34px 34px 34px 34px 34px 34px 44px",alignItems:"center",padding:"11px 0"}}>
+                    <div style={{fontSize:isTop?15:12,fontWeight:900,textAlign:"center",color:isTop?col:C.t3}}>{isTop?MEDAL_E[i]:`#${i+1}`}</div>
+                    <Avatar user={s} size={32} idx={i}/>
+                    <div style={{minWidth:0,paddingRight:4}}>
+                      <div style={{fontWeight:800,fontSize:13,color:isMe?C.acc:isTop?col:C.t1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.name}{isMe?" 👤":""}{s.isAI?" 🤖":""}</div>
+                    </div>
+                    <ScoreCell v={pi} type="pi"/>
+                    <ScoreCell v={r1} type="r"/>
+                    <ScoreCell v={r2} type="r"/>
+                    <ScoreCell v={r3} type="r"/>
+                    <ScoreCell v={rf} type="r"/>
+                    <ScoreCell v={ch} type="champ"/>
+                    <div style={{textAlign:"right",fontSize:isTop?22:17,fontWeight:900,color:col,lineHeight:1}}>{s.total||"—"}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {/* Legend */}
+          <div style={{display:"flex",gap:10,flexWrap:"wrap",marginTop:14,padding:"10px 14px",background:C.bg2,borderRadius:10,border:`1px solid ${C.bdL}`}}>
+            <div style={{fontSize:9,color:C.t3,fontWeight:800,textTransform:"uppercase",letterSpacing:"1px",marginRight:6}}>Legend:</div>
+            <LegChip c="#60a5fa" l="⚡ Play-In"/><LegChip c={C.t2} l="R1 · R2 · R3 · F rounds"/><LegChip c={C.gold} l="🏆 Champion pick"/>
+          </div>
+        </div>
+      )}
+
+      {/* ── Locked list (no scores) ── */}
+      {!rev&&(
+        <div style={{display:"flex",flexDirection:"column",gap:5}}>
+          {scores.map((s,i)=>{
+            const isMe=s.id===myId;
+            const col=s.isAI?C.ai:PC[i%PC.length];
+            return(
+              <div key={s.id} style={{background:isMe?"rgba(249,115,22,.08)":C.bg2,border:`1px solid ${isMe?"rgba(249,115,22,.3)":C.bdL}`,borderLeft:`3px solid ${col}`,borderRadius:11,padding:"11px 14px",display:"flex",alignItems:"center",gap:11}}>
+                <div style={{fontSize:12,fontWeight:900,color:C.t3,minWidth:28,textAlign:"center"}}>#{i+1}</div>
+                <Avatar user={s} size={34} idx={i}/>
+                <div style={{fontWeight:800,fontSize:13,color:isMe?C.acc:C.t1,flex:1}}>{s.name}{isMe?" (you)":""}</div>
+                <div style={{fontSize:14,color:C.t3}}>—</div>
+              </div>
+            );
           })}
         </div>
-      </div>}
-      <div style={{display:"flex",flexDirection:"column",gap:7}}>
-        {scores.map((s,i)=>{
-          const isMe=s.id===myId, isTop=i<3;
-          const col=s.isAI?C.ai:PC[i%PC.length];
-          const mCol=isTop?medalC[i]:null;
-          return <div key={s.id} style={{background:isMe?"rgba(249,115,22,.07)":isTop?`${mCol}08`:C.bg2,border:`1px solid ${isMe?C.acc:isTop?mCol+"44":C.bdL}`,borderLeft:`4px solid ${isTop?mCol:col}`,borderRadius:11,padding:"11px 14px",display:"flex",alignItems:"center",gap:11,flexWrap:"wrap",boxShadow:isTop?`0 0 20px ${mCol}15`:"none"}}>
-            <div style={{fontSize:isTop?18:14,minWidth:28,textAlign:"center",fontWeight:900}}>{isTop?medalEmoji[i]:`#${i+1}`}</div>
-            <Avatar user={s} size={34} idx={i}/>
-            <div style={{flex:1,minWidth:80}}>
-              <div style={{fontWeight:800,fontSize:14,color:s.isAI?C.ai:isMe?C.acc:isTop?mCol:C.t1}}>{s.name}{isMe?" (you)":""}</div>
-              {rev&&<div style={{display:"flex",gap:4,marginTop:4,flexWrap:"wrap"}}>
-                <MiniPt l="⚡" v={piPts(s)}/>
-                {ROUNDS.map(r=><MiniPt key={r.k} l={r.s} v={rPts(s,r.k)}/>)}
-                <MiniPt l="🏆" v={s.bd?.champ?.p||0} gold/>
-                <MiniPt l="⭐" v={s.bd?.mvp?.p||0} ai/>
-              </div>}
-            </div>
-            <div style={{fontSize:isTop?24:18,fontWeight:900,color:isTop?mCol:col}}>{rev?s.total:"—"}</div>
-          </div>;
-        })}
-      </div>
+      )}
     </div>
   );
+}
+function ScoreCell({v,type}){
+  const c=type==="champ"?(v>0?C.gold:C.t3):type==="pi"?(v>0?"#60a5fa":C.t3):(v>0?C.wn:C.t3);
+  const bg=type==="champ"&&v>0?`${C.gold}12`:type==="pi"&&v>0?"rgba(96,165,250,.1)":v>0?`${C.wn}0a`:"transparent";
+  return <div style={{textAlign:"center"}}>
+    {v>0
+      ?<div style={{background:bg,borderRadius:5,padding:"2px 4px",fontSize:11,fontWeight:800,color:c,display:"inline-block",minWidth:22}}>{v}</div>
+      :<div style={{fontSize:10,color:C.t3,opacity:.4}}>—</div>
+    }
+  </div>;
+}
+function LegChip({c,l}){
+  return <div style={{fontSize:10,color:c,fontWeight:600}}>{l}</div>;
 }
 function MiniPt({l,v,gold,ai}){
   const c=gold?C.gold:ai?C.ai:C.t2;
