@@ -1150,11 +1150,28 @@ function Games(){
     setLoading(true);
     fetchPlayoffGames().then(evts=>{setEvents(evts);setLoading(false);});
   },[tick]);
-  const sorted=[...events].sort((a,b)=>new Date(a.date)-new Date(b.date));
+
+  // Only keep games that have a series (playoff/play-in) — filters out regular season stragglers
+  const playoffEvents=events.filter(ev=>ev.competitions?.[0]?.series||ev.season?.type?.id==="3"||ev.season?.type===3);
+  const sorted=[...playoffEvents].sort((a,b)=>new Date(a.date)-new Date(b.date));
   const past=sorted.filter(e=>e.competitions?.[0]?.status?.type?.completed);
   const upcoming=sorted.filter(e=>!e.competitions?.[0]?.status?.type?.completed);
 
-  const GCard=({ev})=>{
+  // Group upcoming games by date (day string)
+  const dayKey=dt=>dt.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+  const isToday=dt=>{const t=new Date();return dt.toDateString()===t.toDateString();};
+  const isTomorrow=dt=>{const t=new Date();t.setDate(t.getDate()+1);return dt.toDateString()===t.toDateString();};
+  const dayLabel=dt=>isToday(dt)?"Today 🔥":isTomorrow(dt)?"Tomorrow":dayKey(dt);
+
+  const grouped=upcoming.reduce((acc,ev)=>{
+    const dt=new Date(ev.date);
+    const label=dayLabel(dt);
+    if(!acc[label]) acc[label]=[];
+    acc[label].push(ev);
+    return acc;
+  },{});
+
+  const GCard=({ev,showDate=false})=>{
     const comp=ev.competitions?.[0];if(!comp)return null;
     const cs=comp.competitors||[];
     const away=cs.find(c=>c.homeAway==="away")||cs[0];
@@ -1164,28 +1181,45 @@ function Games(){
     const live=!done&&comp.status?.type?.id!=="1";
     const dt=new Date(ev.date);
     const series=comp.series?.summary;
+    const awinscore=parseInt(away.score)||0;
+    const hwinscore=parseInt(home.score)||0;
     return(
-      <div style={{background:C.bg2,border:`1px solid ${live?C.er+"44":C.bdL}`,borderRadius:12,padding:"12px 16px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
-        <div style={{flex:1,minWidth:200}}>
-          {[away,home].map((c,i)=>(
-            <div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:i===0?6:0}}>
-              <Logo abbr={c.team?.abbreviation} size={28}/>
-              <span style={{fontWeight:c.winner?800:500,color:c.winner?C.t1:C.t2,fontSize:13,flex:1}}>
-                {c.team?.displayName||c.team?.abbreviation}
-                {c.homeAway==="home"&&<span style={{color:C.t3,fontSize:10}}> (H)</span>}
-              </span>
-              {done&&<span style={{fontSize:20,fontWeight:900,color:c.winner?C.ok:C.t2,minWidth:32,textAlign:"right"}}>{c.score}</span>}
+      <div style={{background:C.bg2,border:`1px solid ${live?C.er+"55":done?C.bdL:C.bdL}`,borderRadius:13,overflow:"hidden",boxShadow:live?"0 0 14px rgba(248,113,113,.15)":"none"}}>
+        {/* Series label bar */}
+        {series&&<div style={{background:C.bg3,borderBottom:`1px solid ${C.bdL}`,padding:"4px 12px",fontSize:10,color:C.t3,fontWeight:700,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span>🏀 {series}</span>
+          {live&&<span style={{color:C.er,fontWeight:800,fontSize:10}}>🔴 LIVE · {comp.status?.displayClock}</span>}
+          {done&&<span style={{color:C.ok,fontWeight:700}}>FINAL</span>}
+          {!done&&!live&&<span style={{color:C.acc,fontWeight:700}}>{dt.toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit'})}</span>}
+        </div>}
+        <div style={{padding:"10px 14px",display:"flex",alignItems:"center",gap:10}}>
+          {/* Away */}
+          <div style={{flex:1,display:"flex",alignItems:"center",gap:8}}>
+            <Logo abbr={away.team?.abbreviation} size={34}/>
+            <div style={{flex:1}}>
+              <div style={{fontWeight:done&&away.winner?900:600,color:done&&away.winner?C.t1:C.t2,fontSize:13}}>{away.team?.displayName||away.team?.abbreviation}</div>
+              <div style={{fontSize:10,color:C.t3}}>Away</div>
             </div>
-          ))}
-        </div>
-        <div style={{textAlign:"center",minWidth:80}}>
-          {done&&<div style={{color:C.ok,fontSize:11,fontWeight:700}}>FINAL</div>}
-          {live&&<div style={{color:C.er,fontSize:11,fontWeight:800}}>🔴 LIVE<br/><span style={{fontSize:10}}>{comp.status?.displayClock}</span></div>}
-          {!done&&!live&&<div>
-            <div style={{color:C.acc,fontWeight:700,fontSize:13}}>{dt.toLocaleDateString('en',{month:'short',day:'numeric'})}</div>
-            <div style={{color:C.t2,fontSize:11}}>{dt.toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit'})}</div>
-          </div>}
-          {series&&<div style={{fontSize:10,color:C.t3,marginTop:3}}>{series}</div>}
+            {done&&<div style={{fontSize:22,fontWeight:900,color:away.winner?C.ok:C.t2,minWidth:28,textAlign:"right"}}>{away.score}</div>}
+          </div>
+          {/* Center divider */}
+          <div style={{textAlign:"center",padding:"0 6px",color:C.t3}}>
+            {!done&&!live&&<div>
+              <div style={{fontSize:11,fontWeight:800,color:C.acc}}>{dt.toLocaleDateString('en',{month:'short',day:'numeric'})}</div>
+              <div style={{fontSize:10,color:C.t3}}>vs</div>
+            </div>}
+            {live&&<div style={{color:C.er,fontWeight:900,fontSize:12}}>LIVE</div>}
+            {done&&<div style={{color:C.t3,fontSize:11}}>—</div>}
+          </div>
+          {/* Home */}
+          <div style={{flex:1,display:"flex",alignItems:"center",gap:8,flexDirection:"row-reverse"}}>
+            <Logo abbr={home.team?.abbreviation} size={34}/>
+            <div style={{flex:1,textAlign:"right"}}>
+              <div style={{fontWeight:done&&home.winner?900:600,color:done&&home.winner?C.t1:C.t2,fontSize:13}}>{home.team?.displayName||home.team?.abbreviation}</div>
+              <div style={{fontSize:10,color:C.t3}}>Home</div>
+            </div>
+            {done&&<div style={{fontSize:22,fontWeight:900,color:home.winner?C.ok:C.t2,minWidth:28,textAlign:"left"}}>{home.score}</div>}
+          </div>
         </div>
       </div>
     );
@@ -1196,27 +1230,45 @@ function Games(){
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:8}}>
         <div>
           <h2 style={{margin:"0 0 2px",fontWeight:900,fontFamily:"Georgia,serif",fontSize:22}}>Playoff Schedule</h2>
-          <p style={{margin:0,color:C.t3,fontSize:13}}>Live scores & upcoming games via ESPN</p>
+          <p style={{margin:0,color:C.t3,fontSize:12}}>Live scores & upcoming games via ESPN</p>
         </div>
         <button onClick={()=>setTick(t=>t+1)} style={btn.g} disabled={loading}>{loading?"⏳ Loading…":"🔄 Refresh"}</button>
       </div>
       {loading&&<div style={{textAlign:"center",color:C.t3,padding:40}}>🏀 Loading schedule…</div>}
-      {!loading&&upcoming.length>0&&(
-        <div style={{marginBottom:24}}>
-          <div style={{fontSize:10,fontWeight:800,color:C.acc,textTransform:"uppercase",letterSpacing:"2px",marginBottom:10}}>📅 Upcoming</div>
-          <div style={{display:"flex",flexDirection:"column",gap:8}}>{upcoming.slice(0,10).map(ev=><GCard key={ev.id} ev={ev}/>)}</div>
+
+      {/* ── Upcoming: day-by-day scheduler ── */}
+      {!loading&&Object.keys(grouped).length>0&&(
+        <div style={{marginBottom:28}}>
+          <div style={{fontSize:10,fontWeight:800,color:C.acc,textTransform:"uppercase",letterSpacing:"2px",marginBottom:14}}>📅 Upcoming Games</div>
+          {Object.entries(grouped).map(([day,evs])=>(
+            <div key={day} style={{marginBottom:20}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                <div style={{fontSize:12,fontWeight:900,color:day.startsWith("Today")?"#f97316":day.startsWith("Tomorrow")?"#fbbf24":C.t2}}>{day}</div>
+                <div style={{flex:1,height:1,background:C.bdL}}/>
+                <div style={{fontSize:10,color:C.t3,fontWeight:700}}>{evs.length} game{evs.length>1?"s":""}</div>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                {evs.map(ev=><GCard key={ev.id} ev={ev}/>)}
+              </div>
+            </div>
+          ))}
         </div>
       )}
+
+      {/* ── Recent Results: playoff only ── */}
       {!loading&&past.length>0&&(
         <div>
-          <div style={{fontSize:10,fontWeight:800,color:C.t3,textTransform:"uppercase",letterSpacing:"2px",marginBottom:10}}>Recent Results</div>
-          <div style={{display:"flex",flexDirection:"column",gap:8}}>{[...past].reverse().slice(0,12).map(ev=><GCard key={ev.id} ev={ev}/>)}</div>
+          <div style={{fontSize:10,fontWeight:800,color:C.t3,textTransform:"uppercase",letterSpacing:"2px",marginBottom:10}}>📋 Recent Results</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {[...past].reverse().slice(0,15).map(ev=><GCard key={ev.id} ev={ev}/>)}
+          </div>
         </div>
       )}
-      {!loading&&events.length===0&&(
+
+      {!loading&&playoffEvents.length===0&&(
         <div style={{textAlign:"center",color:C.t3,padding:40,background:C.bg2,borderRadius:14}}>
           <div style={{fontSize:36,marginBottom:8}}>📅</div>
-          <div>No games found yet — check back soon.</div>
+          <div>No playoff games found yet — check back soon.</div>
         </div>
       )}
     </div>
