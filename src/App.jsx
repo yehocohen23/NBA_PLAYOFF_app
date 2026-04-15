@@ -289,20 +289,21 @@ export default function App(){
 
   // ── Auth ──────────────────────────────────────────────────────────────────
   const reg=async(name,email,pw)=>{
-    if(email.toLowerCase()==="admin") return "That email is reserved";
-    if(users.find(u=>u.email===email)) return "Email already in use";
-    const u={id:Date.now()+"",name,email,password:pw,photo_url:null,po:{},pi:{},champ:null,mvp:null};
+    const normalEmail=email.trim().toLowerCase();
+    if(normalEmail==="admin") return "That email is reserved";
+    if(users.find(u=>u.email.toLowerCase()===normalEmail)) return "Email already in use";
+    const u={id:Date.now()+"",name,email:normalEmail,password:pw,photo_url:null,po:{},pi:{},champ:null,mvp:null};
     const {error}=await sb.from('users').insert(u);
     if(error) return "Registration error: "+error.message;
     setUsers(p=>[...p,{...u,photo:null}]);
     setSess({uid:u.id}); return null;
   };
   const login=(email,pw)=>{
-    if(email.toLowerCase()==="admin"){
+    if(email.trim().toLowerCase()==="admin"){
       if(pw===adminPw){setSess({admin:true});return null;}
       return "Wrong admin password";
     }
-    const u=users.find(u=>u.email===email&&u.password===pw);
+    const u=users.find(u=>u.email.toLowerCase()===email.trim().toLowerCase()&&u.password===pw);
     if(!u) return "Wrong email or password";
     setSess({uid:u.id}); return null;
   };
