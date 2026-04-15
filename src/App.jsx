@@ -175,7 +175,7 @@ const pcol=(u,i)=>u?.isAI?C.ai:PC[i%PC.length];
 const ESPN_SB='https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard';
 async function fetchPlayoffGames(){
   const today=new Date();
-  const s=new Date(today);s.setDate(today.getDate()-7);
+  const s=new Date(today);s.setDate(today.getDate()-21);
   const e=new Date(today);e.setDate(today.getDate()+21);
   const fmt=d=>`${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
   try{
@@ -183,16 +183,30 @@ async function fetchPlayoffGames(){
     if(r.ok){const j=await r.json();if((j.events||[]).length>3)return j.events;}
   }catch{}
   // Fallback: one call per day
-  const all=[];
-  const tasks=[];
-  for(let i=-5;i<=14;i++){
-    const d=new Date(today);d.setDate(today.getDate()+i);
-    const ds=fmt(d);
+  const all=[];const tasks=[];
+  for(let i=-14;i<=14;i++){
+    const d=new Date(today);d.setDate(today.getDate()+i);const ds=fmt(d);
     tasks.push(fetch(`${ESPN_SB}?dates=${ds}`).then(r=>r.ok?r.json():{events:[]}).then(j=>j.events||[]).catch(()=>[]));
   }
-  const res=await Promise.all(tasks);
-  res.forEach(arr=>all.push(...arr));
+  const res=await Promise.all(tasks);res.forEach(arr=>all.push(...arr));
   return all;
+}
+// ESPN numeric team IDs (for injuries API)
+const ESPN_IDS={DET:8,BOS:2,NYK:18,CLE:5,TOR:28,ATL:1,OKC:25,SAS:24,DEN:7,LAL:13,HOU:10,MIN:16,ORL:19,PHX:21,LAC:12,GSW:9};
+// Compute current series win totals from ESPN completed games
+async function fetchSeriesScores(){
+  const evts=await fetchPlayoffGames();
+  const done=evts.filter(e=>e.competitions?.[0]?.status?.type?.completed&&
+    (e.competitions?.[0]?.series||e.season?.type?.id==="3"||e.season?.type===3));
+  const map={};
+  done.forEach(ev=>{
+    const cs=ev.competitions?.[0]?.competitors||[];if(cs.length<2)return;
+    const key=[cs[0].team?.abbreviation,cs[1].team?.abbreviation].sort().join('|');
+    if(!map[key])map[key]={wins:{},games:0};
+    map[key].games++;
+    cs.forEach(c=>{if(c.winner)map[key].wins[c.team.abbreviation]=(map[key].wins[c.team.abbreviation]||0)+1;});
+  });
+  return map;
 }
 
 // ─── COUNTDOWN ───────────────────────────────────────────────────────────────
@@ -762,20 +776,31 @@ async function fetchAllInjuries(){
   const map={};
   await Promise.all(playoffTeams.map(async abbr=>{
     try{
+      // Primary: ESPN dedicated injuries endpoint (most accurate & up-to-date)
+      const tid=ESPN_IDS[abbr];
+      if(tid){
+        const r=await fetch(`https://sports.core.api.espn.com/v2/sports/basketball/leagues/nba/teams/${tid}/injuries?limit=25`);
+        if(r.ok){
+          const j=await r.json();
+          const injured=(j.items||[]).map(item=>({
+            name:item.athlete?.displayName||item.athlete?.shortName||"?",
+            status:item.type?.description||item.injury?.status||"Out",
+            detail:item.injury?.shortComment||item.injury?.longComment||"",
+            pos:item.athlete?.position?.abbreviation||"",
+          })).filter(a=>a.name&&a.name!=="?");
+          map[abbr]=injured;return;
+        }
+      }
+      // Fallback: roster endpoint filtered by non-active status
       const espn=T[abbr]?.e||abbr.toLowerCase();
-      const r=await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${espn}/roster`);
-      if(!r.ok) return;
-      const j=await r.json();
-      const groups=j.athletes||[];
-      const injured=groups.flatMap(g=>g.items||[]).filter(a=>{
-        const st=a.status?.type?.name||"";
-        return st&&st.toLowerCase()!=="active";
-      }).map(a=>({
-        name:a.displayName||a.shortName||"?",
-        status:a.status?.type?.name||"Out",
-        pos:a.position?.abbreviation||"",
-      }));
-      if(injured.length) map[abbr]=injured;
+      const r2=await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${espn}/roster`);
+      if(!r2.ok)return;
+      const j2=await r2.json();
+      const injured2=(j2.athletes||[]).flatMap(g=>g.items||[]).filter(a=>{
+        const st=(a.status?.type?.name||"").toLowerCase();
+        return st&&st!=="active";
+      }).map(a=>({name:a.displayName||a.shortName||"?",status:a.status?.type?.name||"Out",detail:"",pos:a.position?.abbreviation||""}));
+      map[abbr]=injured2;
     }catch{}
   }));
   return map;
@@ -785,12 +810,16 @@ function Teams({res}){
   const [injuries,setInjuries]=useState({});
   const [injLoading,setInjLoading]=useState(false);
   const [expanded,setExpanded]=useState(null);
+  const [seriesScores,setSeriesScores]=useState({});
 
   const loadInjuries=()=>{
     setInjLoading(true);
     fetchAllInjuries().then(m=>{setInjuries(m);setInjLoading(false);});
   };
-  useEffect(()=>{loadInjuries();},[]);
+  useEffect(()=>{
+    loadInjuries();
+    fetchSeriesScores().then(setSeriesScores);
+  },[]);
 
   // Seed label helper
   const seedLabel=(abbr,placeholder)=>{
@@ -812,25 +841,48 @@ function Teams({res}){
     const result=res?.po?.[s.id];
     const resolved2=T[rt2]; // true if Play-In resolved
 
-    const TeamCol=({abbr,placeholder,d,inj,side})=>(
+    const seriesKey=[rt1,rt2].sort().join('|');
+    const sd=seriesScores[seriesKey];
+    const sw1=sd?.wins?.[rt1]||0,sw2=sd?.wins?.[rt2]||0;
+    const liveLeader=sw1>sw2?rt1:sw2>sw1?rt2:null;
+
+    const TeamCol=({abbr,placeholder,d,inj,seriesWins})=>(
       <div style={{flex:1,padding:"14px 10px",display:"flex",flexDirection:"column",alignItems:"center",gap:5,textAlign:"center"}}>
         <Logo abbr={abbr} size={52}/>
         <div style={{fontWeight:900,fontSize:13,lineHeight:1.2,color:C.t1}}>{T[abbr]?.n||(placeholder?LABELS[placeholder]:abbr)||abbr}</div>
         <div style={{fontSize:10,color:C.t3}}>{d.rec||""}{d.seed?` · ${d.seed}`:(placeholder&&!T[abbr]?` · ${LABELS[placeholder]||placeholder}`:"")}</div>
         {d.odds&&<div style={{fontSize:10,color:C.acc,fontWeight:800}}>{d.odds}</div>}
+        {seriesWins>0&&<div style={{background:"rgba(52,211,153,.12)",border:"1px solid rgba(52,211,153,.3)",borderRadius:6,padding:"3px 8px",fontSize:10,color:C.ok,fontWeight:800}}>{seriesWins} W</div>}
         {inj.length>0&&<div style={{background:"rgba(248,113,113,.12)",border:"1px solid rgba(248,113,113,.3)",borderRadius:6,padding:"3px 8px",fontSize:9,color:C.er,fontWeight:700}}>{inj.length} injured</div>}
       </div>
     );
 
     return(
-      <div style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:14,marginBottom:10,overflow:"hidden"}}>
+      <div style={{background:C.bg2,border:`1px solid ${result?.w?C.ok+"44":liveLeader?C.acc+"33":C.bdL}`,borderRadius:14,marginBottom:10,overflow:"hidden"}}>
+        {/* Series progress bar (shown when games have been played) */}
+        {(sd?.games>0)&&!result?.w&&(
+          <div style={{background:C.bg3,borderBottom:`1px solid ${C.bdL}`,padding:"4px 12px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span style={{fontSize:10,color:liveLeader===rt1?C.ok:C.t3,fontWeight:liveLeader===rt1?800:600}}>{T[rt1]?.a} {sw1}</span>
+            <span style={{fontSize:9,color:C.t3,fontWeight:700}}>Series · {sd.games} game{sd.games>1?"s":""} played</span>
+            <span style={{fontSize:10,color:liveLeader===rt2?C.ok:C.t3,fontWeight:liveLeader===rt2?800:600}}>{sw2} {T[rt2]?.a}</span>
+          </div>
+        )}
+        {result?.w&&(
+          <div style={{background:"rgba(52,211,153,.06)",borderBottom:`1px solid ${C.ok}33`,padding:"4px 12px",display:"flex",justifyContent:"center",gap:6,alignItems:"center"}}>
+            <Logo abbr={result.w} size={14}/>
+            <span style={{fontSize:10,color:C.ok,fontWeight:800}}>{T[result.w]?.n} wins series in {result.g} games</span>
+          </div>
+        )}
         {/* Main row */}
         <div style={{display:"flex",alignItems:"stretch"}}>
-          <TeamCol abbr={rt1} placeholder={null} d={d1} inj={inj1} side="left"/>
+          <TeamCol abbr={rt1} placeholder={null} d={d1} inj={inj1} seriesWins={sw1}/>
           {/* Center */}
           <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"10px 6px",gap:4,minWidth:44}}>
-            {result?.w
-              ?<><Logo abbr={result.w} size={18}/><div style={{fontSize:8,color:C.ok,fontWeight:800,textAlign:"center"}}>W in {result.g}</div></>
+            {sd?.games>0&&!result?.w
+              ?<div style={{textAlign:"center"}}>
+                  <div style={{fontSize:16,fontWeight:900,color:C.t1,lineHeight:1}}>{sw1}–{sw2}</div>
+                  {liveLeader&&<div style={{fontSize:8,color:C.ok,fontWeight:800,marginTop:1}}>{T[liveLeader]?.a} leads</div>}
+                </div>
               :<div style={{fontSize:10,fontWeight:700,color:C.t3}}>VS</div>
             }
             <button onClick={()=>setExpanded(isExp?null:s.id)}
@@ -838,7 +890,7 @@ function Teams({res}){
               {isExp?"▲":"▼"}
             </button>
           </div>
-          <TeamCol abbr={rt2} placeholder={T[rt2]?null:s.t2} d={d2} inj={inj2} side="right"/>
+          <TeamCol abbr={rt2} placeholder={T[rt2]?null:s.t2} d={d2} inj={inj2} seriesWins={sw2}/>
         </div>
 
         {/* Expanded details */}
@@ -1142,36 +1194,37 @@ function AllPicks({all,res,cfg}){
 }
 
 // ─── GAMES / SCHEDULE ────────────────────────────────────────────────────────
+// Sport5 broadcasts all NBA playoff games in Israel. Helper: Israel time (Asia/Jerusalem = UTC+2 winter / UTC+3 summer)
+const ilTime=dt=>new Date(dt).toLocaleTimeString('en',{timeZone:'Asia/Jerusalem',hour:'2-digit',minute:'2-digit',hour12:false});
+const ilDate=dt=>new Date(dt).toLocaleDateString('he-IL',{timeZone:'Asia/Jerusalem',weekday:'short',day:'numeric',month:'numeric'});
+
 function Games(){
   const [events,setEvents]=useState([]);
   const [loading,setLoading]=useState(true);
   const [tick,setTick]=useState(0);
+  const [subTab,setSubTab]=useState("schedule");// "schedule" | "results"
   useEffect(()=>{
     setLoading(true);
     fetchPlayoffGames().then(evts=>{setEvents(evts);setLoading(false);});
   },[tick]);
 
-  // Only keep games that have a series (playoff/play-in) — filters out regular season stragglers
+  // Only keep playoff/play-in games
   const playoffEvents=events.filter(ev=>ev.competitions?.[0]?.series||ev.season?.type?.id==="3"||ev.season?.type===3);
   const sorted=[...playoffEvents].sort((a,b)=>new Date(a.date)-new Date(b.date));
-  const past=sorted.filter(e=>e.competitions?.[0]?.status?.type?.completed);
+  const past=[...sorted].filter(e=>e.competitions?.[0]?.status?.type?.completed).reverse();
   const upcoming=sorted.filter(e=>!e.competitions?.[0]?.status?.type?.completed);
 
-  // Group upcoming games by date (day string)
   const dayKey=dt=>dt.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
   const isToday=dt=>{const t=new Date();return dt.toDateString()===t.toDateString();};
   const isTomorrow=dt=>{const t=new Date();t.setDate(t.getDate()+1);return dt.toDateString()===t.toDateString();};
   const dayLabel=dt=>isToday(dt)?"Today 🔥":isTomorrow(dt)?"Tomorrow":dayKey(dt);
 
   const grouped=upcoming.reduce((acc,ev)=>{
-    const dt=new Date(ev.date);
-    const label=dayLabel(dt);
-    if(!acc[label]) acc[label]=[];
-    acc[label].push(ev);
-    return acc;
+    const dt=new Date(ev.date);const label=dayLabel(dt);
+    if(!acc[label])acc[label]=[];acc[label].push(ev);return acc;
   },{});
 
-  const GCard=({ev,showDate=false})=>{
+  const GCard=({ev})=>{
     const comp=ev.competitions?.[0];if(!comp)return null;
     const cs=comp.competitors||[];
     const away=cs.find(c=>c.homeAway==="away")||cs[0];
@@ -1181,17 +1234,22 @@ function Games(){
     const live=!done&&comp.status?.type?.id!=="1";
     const dt=new Date(ev.date);
     const series=comp.series?.summary;
-    const awinscore=parseInt(away.score)||0;
-    const hwinscore=parseInt(home.score)||0;
+    const ilT=ilTime(ev.date);
+    const ilD=ilDate(ev.date);
     return(
       <div style={{background:C.bg2,border:`1px solid ${live?C.er+"55":done?C.bdL:C.bdL}`,borderRadius:13,overflow:"hidden",boxShadow:live?"0 0 14px rgba(248,113,113,.15)":"none"}}>
-        {/* Series label bar */}
-        {series&&<div style={{background:C.bg3,borderBottom:`1px solid ${C.bdL}`,padding:"4px 12px",fontSize:10,color:C.t3,fontWeight:700,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <span>🏀 {series}</span>
-          {live&&<span style={{color:C.er,fontWeight:800,fontSize:10}}>🔴 LIVE · {comp.status?.displayClock}</span>}
-          {done&&<span style={{color:C.ok,fontWeight:700}}>FINAL</span>}
-          {!done&&!live&&<span style={{color:C.acc,fontWeight:700}}>{dt.toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit'})}</span>}
-        </div>}
+        {/* Top info bar */}
+        <div style={{background:C.bg3,borderBottom:`1px solid ${C.bdL}`,padding:"5px 12px",fontSize:10,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:4}}>
+          <span style={{color:C.t2,fontWeight:700}}>{series?"🏀 "+series:"🏀 Playoff"}</span>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            {/* Sport5 badge */}
+            {!done&&<span style={{background:"#1a3a5c",border:"1px solid #2563eb55",borderRadius:5,padding:"1px 7px",color:"#60a5fa",fontWeight:800,fontSize:9,letterSpacing:.5}}>📺 Sport5</span>}
+            {/* Israeli time */}
+            {!done&&!live&&<span style={{color:C.acc,fontWeight:800,fontSize:11}}>{ilT} 🇮🇱 <span style={{color:C.t3,fontWeight:600,fontSize:9}}>{ilD}</span></span>}
+            {live&&<span style={{color:C.er,fontWeight:800,fontSize:10}}>🔴 LIVE · {comp.status?.displayClock} <span style={{color:"#f97316",marginLeft:4}}>📺 Sport5</span></span>}
+            {done&&<span style={{color:C.ok,fontWeight:700}}>✓ FINAL</span>}
+          </div>
+        </div>
         <div style={{padding:"10px 14px",display:"flex",alignItems:"center",gap:10}}>
           {/* Away */}
           <div style={{flex:1,display:"flex",alignItems:"center",gap:8}}>
@@ -1200,16 +1258,16 @@ function Games(){
               <div style={{fontWeight:done&&away.winner?900:600,color:done&&away.winner?C.t1:C.t2,fontSize:13}}>{away.team?.displayName||away.team?.abbreviation}</div>
               <div style={{fontSize:10,color:C.t3}}>Away</div>
             </div>
-            {done&&<div style={{fontSize:22,fontWeight:900,color:away.winner?C.ok:C.t2,minWidth:28,textAlign:"right"}}>{away.score}</div>}
+            {(done||live)&&<div style={{fontSize:22,fontWeight:900,color:away.winner?C.ok:C.t2,minWidth:28,textAlign:"right"}}>{away.score}</div>}
           </div>
-          {/* Center divider */}
-          <div style={{textAlign:"center",padding:"0 6px",color:C.t3}}>
+          {/* Center */}
+          <div style={{textAlign:"center",padding:"0 6px",color:C.t3,minWidth:32}}>
             {!done&&!live&&<div>
-              <div style={{fontSize:11,fontWeight:800,color:C.acc}}>{dt.toLocaleDateString('en',{month:'short',day:'numeric'})}</div>
-              <div style={{fontSize:10,color:C.t3}}>vs</div>
+              <div style={{fontSize:10,fontWeight:800,color:C.t2}}>{dt.toLocaleDateString('en',{month:'short',day:'numeric'})}</div>
+              <div style={{fontSize:10,color:C.t3,marginTop:1}}>vs</div>
             </div>}
-            {live&&<div style={{color:C.er,fontWeight:900,fontSize:12}}>LIVE</div>}
-            {done&&<div style={{color:C.t3,fontSize:11}}>—</div>}
+            {live&&<div style={{color:C.er,fontWeight:900,fontSize:11}}>LIVE</div>}
+            {done&&<div style={{color:C.t3,fontSize:13}}>—</div>}
           </div>
           {/* Home */}
           <div style={{flex:1,display:"flex",alignItems:"center",gap:8,flexDirection:"row-reverse"}}>
@@ -1218,58 +1276,77 @@ function Games(){
               <div style={{fontWeight:done&&home.winner?900:600,color:done&&home.winner?C.t1:C.t2,fontSize:13}}>{home.team?.displayName||home.team?.abbreviation}</div>
               <div style={{fontSize:10,color:C.t3}}>Home</div>
             </div>
-            {done&&<div style={{fontSize:22,fontWeight:900,color:home.winner?C.ok:C.t2,minWidth:28,textAlign:"left"}}>{home.score}</div>}
+            {(done||live)&&<div style={{fontSize:22,fontWeight:900,color:home.winner?C.ok:C.t2,minWidth:28,textAlign:"left"}}>{home.score}</div>}
           </div>
         </div>
       </div>
     );
   };
 
+  const tabSt=(k)=>({
+    padding:"7px 16px",borderRadius:20,fontWeight:700,fontSize:12,cursor:"pointer",border:"none",
+    background:subTab===k?C.acc:"transparent",color:subTab===k?"#fff":C.t2,transition:"all .15s"
+  });
+
   return(
     <div>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:8}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
         <div>
           <h2 style={{margin:"0 0 2px",fontWeight:900,fontFamily:"Georgia,serif",fontSize:22}}>Playoff Schedule</h2>
-          <p style={{margin:0,color:C.t3,fontSize:12}}>Live scores & upcoming games via ESPN</p>
+          <p style={{margin:0,color:C.t3,fontSize:12}}>Live scores via ESPN · Times shown in 🇮🇱 Israeli time</p>
         </div>
         <button onClick={()=>setTick(t=>t+1)} style={btn.g} disabled={loading}>{loading?"⏳ Loading…":"🔄 Refresh"}</button>
       </div>
+
+      {/* Sub-tabs */}
+      <div style={{display:"flex",gap:4,background:C.bg2,borderRadius:22,padding:3,marginBottom:18,width:"fit-content"}}>
+        <button style={tabSt("schedule")} onClick={()=>setSubTab("schedule")}>📅 Schedule {upcoming.length>0?`(${upcoming.length})`:""}</button>
+        <button style={tabSt("results")} onClick={()=>setSubTab("results")}>📋 Results {past.length>0?`(${past.length})`:""}</button>
+      </div>
+
       {loading&&<div style={{textAlign:"center",color:C.t3,padding:40}}>🏀 Loading schedule…</div>}
 
-      {/* ── Upcoming: day-by-day scheduler ── */}
-      {!loading&&Object.keys(grouped).length>0&&(
-        <div style={{marginBottom:28}}>
-          <div style={{fontSize:10,fontWeight:800,color:C.acc,textTransform:"uppercase",letterSpacing:"2px",marginBottom:14}}>📅 Upcoming Games</div>
-          {Object.entries(grouped).map(([day,evs])=>(
-            <div key={day} style={{marginBottom:20}}>
-              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-                <div style={{fontSize:12,fontWeight:900,color:day.startsWith("Today")?"#f97316":day.startsWith("Tomorrow")?"#fbbf24":C.t2}}>{day}</div>
-                <div style={{flex:1,height:1,background:C.bdL}}/>
-                <div style={{fontSize:10,color:C.t3,fontWeight:700}}>{evs.length} game{evs.length>1?"s":""}</div>
-              </div>
-              <div style={{display:"flex",flexDirection:"column",gap:8}}>
-                {evs.map(ev=><GCard key={ev.id} ev={ev}/>)}
-              </div>
+      {/* ── Schedule tab ── */}
+      {!loading&&subTab==="schedule"&&(
+        <>
+          {Object.keys(grouped).length>0?(
+            <div>
+              {Object.entries(grouped).map(([day,evs])=>(
+                <div key={day} style={{marginBottom:20}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                    <div style={{fontSize:12,fontWeight:900,color:day.startsWith("Today")?"#f97316":day.startsWith("Tomorrow")?"#fbbf24":C.t2}}>{day}</div>
+                    <div style={{flex:1,height:1,background:C.bdL}}/>
+                    <div style={{fontSize:10,color:C.t3,fontWeight:700}}>{evs.length} game{evs.length>1?"s":""}</div>
+                  </div>
+                  <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                    {evs.map(ev=><GCard key={ev.id} ev={ev}/>)}
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          ):(
+            <div style={{textAlign:"center",color:C.t3,padding:40,background:C.bg2,borderRadius:14}}>
+              <div style={{fontSize:36,marginBottom:8}}>📅</div>
+              <div>No upcoming games found. Check back soon or hit Refresh.</div>
+            </div>
+          )}
+        </>
       )}
 
-      {/* ── Recent Results: playoff only ── */}
-      {!loading&&past.length>0&&(
-        <div>
-          <div style={{fontSize:10,fontWeight:800,color:C.t3,textTransform:"uppercase",letterSpacing:"2px",marginBottom:10}}>📋 Recent Results</div>
-          <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            {[...past].reverse().slice(0,15).map(ev=><GCard key={ev.id} ev={ev}/>)}
-          </div>
-        </div>
-      )}
-
-      {!loading&&playoffEvents.length===0&&(
-        <div style={{textAlign:"center",color:C.t3,padding:40,background:C.bg2,borderRadius:14}}>
-          <div style={{fontSize:36,marginBottom:8}}>📅</div>
-          <div>No playoff games found yet — check back soon.</div>
-        </div>
+      {/* ── Results tab ── */}
+      {!loading&&subTab==="results"&&(
+        <>
+          {past.length>0?(
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {past.slice(0,30).map(ev=><GCard key={ev.id} ev={ev}/>)}
+            </div>
+          ):(
+            <div style={{textAlign:"center",color:C.t3,padding:40,background:C.bg2,borderRadius:14}}>
+              <div style={{fontSize:36,marginBottom:8}}>📋</div>
+              <div>No completed games yet. Results will appear here after games finish.</div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
