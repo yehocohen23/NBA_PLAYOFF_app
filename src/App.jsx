@@ -88,6 +88,17 @@ const SERIES=[
 const LABELS={E8:"E #8",E7:"E #7",W8:"W #8",W7:"W #7",E1W:"E1/E8 W",E4W:"E4/E5 W",E2W:"E2/E7 W",E3W:"E3/E6 W",W1W:"W1/W8 W",W4W:"W4/W5 W",W2W:"W2/W7 W",W3W:"W3/W6 W",ES1:"E Semi W1",ES2:"E Semi W2",WS1:"W Semi W1",WS2:"W Semi W2",ECF:"East Champ",WCF:"West Champ"};
 const sn=(k)=>T[k]?.n||LABELS[k]||k;
 
+// Resolve Play-In placeholder seeds (E7/E8/W7/W8) to actual team abbrs
+function resolveTeam(abbr,res){
+  if(T[abbr]) return abbr;
+  const pi=res?.pi||{};
+  if(abbr==='E7') return pi.pi_e78?.w||null;
+  if(abbr==='E8') return pi.pi_elo?.w||null;
+  if(abbr==='W7') return pi.pi_w78?.w||null;
+  if(abbr==='W8') return pi.pi_wlo?.w||null;
+  return null;
+}
+
 // ─── AI PICKS ────────────────────────────────────────────────────────────────
 const AI={
   id:"__ai__",name:"Claude AI 🤖",isAI:true,photo:null,
@@ -121,7 +132,12 @@ function scoreUser(u,res,cfg){
   if(cfg.rPo){
     for(const s of SERIES){
       const pts=ROUNDS.find(r=>r.k===s.r).pts;
-      const sc=scoreS(po[s.id],res.po?.[s.id],pts);
+      const rawPred=po[s.id];
+      // Resolve placeholder team IDs (E7/E8/W7/W8) so picks match actual results
+      const resolvedPred=rawPred?.w
+        ?{...rawPred,w:resolveTeam(rawPred.w,res)||rawPred.w}
+        :rawPred;
+      const sc=scoreS(resolvedPred,res.po?.[s.id],pts);
       bd[s.id]=sc; total+=sc.p;
     }
     if(res.champ){const p=(u.isAI?u.champ:u.champ)===res.champ?10:0;bd.champ={p,t:p?"exact":"wrong"};total+=p;}
@@ -243,7 +259,7 @@ export default function App(){
   const [users,setUsers]     =useState([]);
   const [res,setRes]         =useState({po:{},pi:{},champ:null,mvp:null});
   const [cfg,setCfgRaw]      =useState({
-    rPi:false, rPo:false, openR:"r1",
+    rPi:false, rPo:false, rPiPicks:false, openR:"r1",
     deadline:null, adminPw:null,
     prizes:{p1:"TBD by admin",p2:"TBD by admin",p3:"TBD by admin"},
     leagueName:"NBA Playoffs 2026",
@@ -439,7 +455,7 @@ function Main({me,all,res,cfg,bettingOpen,savePO,savePI,savePhoto,logout}){
     {k:"prizes",i:"🎁",l:"Prizes"},
     {k:"board",i:"🏅",l:"Standings"},
     {k:"profile",i:"👤",l:"Profile"},
-    ...((cfg.rPo||cfg.rPi)?[{k:"all",i:"👀",l:"All Picks"}]:[]),
+    ...((cfg.rPo||cfg.rPiPicks)?[{k:"all",i:"👀",l:"All Picks"}]:[]),
   ];
   return(
     <div style={{minHeight:"100vh",background:C.bg0,color:C.t1,fontFamily:"'DM Sans','Segoe UI',sans-serif"}}>
@@ -462,7 +478,7 @@ function Main({me,all,res,cfg,bettingOpen,savePO,savePI,savePhoto,logout}){
         {tab==="picks"   &&<Picks   me={me} res={res} cfg={cfg} onSave={savePO} bettingOpen={bettingOpen} finalsOpen={finalsOpen} getRoundDeadline={getRoundDeadline} roundBettingOpen={roundBettingOpen}/>}
         {tab==="playin"  &&<Playin  me={me} res={res} cfg={cfg} onSave={savePI} bettingOpen={bettingOpen} piDeadline={getRoundDeadline('pi')} roundBettingOpen={roundBettingOpen}/>}
         {tab==="games"   &&<Games/>}
-        {tab==="teams"   &&<Teams/>}
+        {tab==="teams"   &&<Teams res={res}/>}
         {tab==="rules"   &&<Rules/>}
         {tab==="prizes"  &&<Prizes cfg={cfg}/>}
         {tab==="board"   &&<Board   scores={scores} myId={me.id} cfg={cfg}/>}
@@ -499,7 +515,7 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
     const allOpenSeries=SERIES.filter(s=>ROUND_KEYS.indexOf(s.r)<=openIdx);
     const incomplete=allOpenSeries.filter(s=>draft[s.id]?.w&&!draft[s.id]?.g);
     if(incomplete.length>0){
-      setSaveErr(`⚠️ נא לבחור גם כמה משחקים ב-${incomplete.length} סדרה${incomplete.length>1?"ות":""} (${incomplete.map(s=>sn(s.t1)+" vs "+sn(s.t2)).join(", ")})`);
+      setSaveErr(`⚠️ נא לבחור גם כמה משחקים ב-${incomplete.length} סדרה${incomplete.length>1?"ות":""} (${incomplete.map(s=>sn(resolveTeam(s.t1,res)||s.t1)+" vs "+sn(resolveTeam(s.t2,res)||s.t2)).join(", ")})`);
       return;
     }
     setSaveErr("");
@@ -511,16 +527,19 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
   const SeriesCard=({s})=>{
     const pred=draft[s.id]||{};
     const real=res.po?.[s.id];
-    const sc=scoreS(pred,real,roundPts);
+    // Resolve pred for scoring (E8 → actual team if Play-In done)
+    const resolvedPred=pred?.w?{...pred,w:resolveTeam(pred.w,res)||pred.w}:pred;
+    const sc=scoreS(resolvedPred,real,roundPts);
     const bg=BG[sc.t];
     return(
       <div style={{background:sc.t!=="pending"?bg.bg:C.bg2,border:`1px solid ${sc.t!=="pending"?bg.c:C.bdL}`,borderRadius:14,padding:16}}>
         <div style={{display:"flex",background:C.bg3,borderRadius:10,overflow:"hidden",marginBottom:10}}>
           {[{k:s.t1},{k:s.t2}].map(({k},idx)=>{
+            const rk=resolveTeam(k,res)||k; // resolved for display (logo + name)
             const isSel=pred.w===k;
             return <button key={k} onClick={()=>setPred(s.id,"w",k)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"10px 6px",border:"none",cursor:"pointer",background:isSel?`linear-gradient(${idx===0?"135deg":"225deg"},rgba(249,115,22,.2),transparent)`:"transparent",outline:isSel?`2px solid ${C.acc}`:"none",outlineOffset:-2,position:"relative"}}>
-              <Logo abbr={k} size={40}/>
-              <div style={{fontSize:10,fontWeight:700,color:isSel?C.acc:C.t2,marginTop:5,textAlign:"center",lineHeight:1.2}}>{sn(k)}</div>
+              <Logo abbr={rk} size={40}/>
+              <div style={{fontSize:10,fontWeight:700,color:isSel?C.acc:C.t2,marginTop:5,textAlign:"center",lineHeight:1.2}}>{sn(rk)}</div>
               {isSel&&<div style={{fontSize:9,color:C.acc,fontWeight:800}}>✓ PICKED</div>}
               {idx===0&&<div style={{position:"absolute",right:0,top:"50%",transform:"translateY(-50%)",fontSize:9,color:C.t3,fontWeight:700}}>vs</div>}
             </button>;
@@ -590,20 +609,35 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
         </div>
       )}
 
-      {/* Champion - all 30 teams */}
+      {/* Champion - all 30 teams with logos */}
       <div style={{background:`rgba(249,115,22,.07)`,border:`1px solid rgba(249,115,22,.25)`,borderRadius:16,padding:20,marginBottom:16}}>
-        <div style={{textAlign:"center",marginBottom:14}}><div style={{fontSize:28,marginBottom:4}}>🏆</div><div style={{fontWeight:900,fontSize:16}}>NBA Champion Pick</div><div style={{color:C.t3,fontSize:12}}>All 30 teams · +10 pts</div></div>
+        <div style={{textAlign:"center",marginBottom:16}}>
+          <div style={{fontSize:32,marginBottom:4}}>🏆</div>
+          <div style={{fontWeight:900,fontSize:17}}>NBA Champion Pick</div>
+          <div style={{color:C.t3,fontSize:12,marginTop:2}}>+10 pts · pick the team that lifts the trophy</div>
+          {champ&&<div style={{marginTop:10,display:"inline-flex",alignItems:"center",gap:8,background:C.aD,border:`1px solid ${C.acc}`,borderRadius:10,padding:"7px 14px"}}>
+            <Logo abbr={champ} size={28}/><span style={{color:C.acc,fontWeight:900,fontSize:14}}>🏆 {T[champ]?.n}</span>
+          </div>}
+        </div>
         {[{label:"Eastern Conference",abbrs:EAST_ABBRS},{label:"Western Conference",abbrs:WEST_ABBRS}].map(({label,abbrs})=>(
-          <div key={label} style={{marginBottom:12}}>
-            <div style={{fontSize:10,fontWeight:800,color:C.t3,textTransform:"uppercase",letterSpacing:"1px",marginBottom:6}}>{label}</div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
-              {abbrs.map(abbr=><button key={abbr} onClick={()=>setChamp(champ===abbr?"":abbr)} style={{display:"flex",alignItems:"center",gap:5,padding:"5px 9px",border:`2px solid ${champ===abbr?C.acc:C.bd}`,borderRadius:8,background:champ===abbr?C.aD:C.bg2,cursor:"pointer",color:champ===abbr?C.acc:C.t2,fontWeight:champ===abbr?800:500,fontSize:11}}>
-                <Logo abbr={abbr} size={16}/>{T[abbr]?.a}
-              </button>)}
+          <div key={label} style={{marginBottom:16}}>
+            <div style={{fontSize:10,fontWeight:800,color:C.t3,textTransform:"uppercase",letterSpacing:"1.5px",marginBottom:8}}>{label}</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(72px,1fr))",gap:6}}>
+              {abbrs.map(abbr=>{
+                const sel=champ===abbr;
+                return <button key={abbr} onClick={()=>setChamp(sel?"":abbr)}
+                  style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,padding:"10px 6px",
+                    border:`2px solid ${sel?C.acc:C.bd}`,borderRadius:10,
+                    background:sel?C.aD:C.bg2,cursor:"pointer",
+                    boxShadow:sel?`0 0 12px rgba(249,115,22,.3)`:"none"}}>
+                  <Logo abbr={abbr} size={32}/>
+                  <div style={{fontSize:9,fontWeight:sel?900:600,color:sel?C.acc:C.t3,textAlign:"center",lineHeight:1.1}}>{T[abbr]?.a}</div>
+                  {sel&&<div style={{fontSize:8,color:C.acc}}>✓</div>}
+                </button>;
+              })}
             </div>
           </div>
         ))}
-        {champ&&<div style={{textAlign:"center",color:C.acc,fontWeight:700,fontSize:13,marginTop:6,display:"flex",alignItems:"center",justifyContent:"center",gap:6}}><Logo abbr={champ} size={20}/>🏆 {T[champ]?.n}</div>}
       </div>
 
       {/* Finals MVP — only visible when Finals round is open */}
@@ -709,48 +743,166 @@ function Playin({me,res,cfg,onSave,bettingOpen,piDeadline,roundBettingOpen}){
 
 // ─── TEAMS ───────────────────────────────────────────────────────────────────
 const TDATA={
-  DET:{rec:"60-22",odds:"+2200",stars:["Cade Cunningham","Paul Reed"],info:"First 60-win season since 1988. Defense-first identity. Cunningham finally healthy.",q:"Enough offense beyond Cunningham?"},
-  BOS:{rec:"58-24",odds:"+550",stars:["Jaylen Brown","Jayson Tatum"],info:"Tatum back from Achilles. 12th straight playoff. Elite offense and defense.",q:"Tatum still shaking off rust. Pritchard inconsistency risk."},
-  NYK:{rec:"53-29",odds:"+1800",stars:["Jalen Brunson","Karl-Anthony Towns"],info:"3rd straight top-3 seed. Same core, better bench. Beat BOS 3 times this season.",q:"KAT must deliver in big moments."},
-  CLE:{rec:"51-31",odds:"+1100",stars:["Donovan Mitchell","James Harden"],info:"Superstar backcourt. Harden's first season in Cleveland brings veteran IQ.",q:"Two ball-dominant stars sharing the floor under pressure."},
-  TOR:{rec:"48-34",odds:"+4000",stars:["Scottie Barnes","Immanuel Quickley"],info:"Snuck into #5 on final day. Young, athletic, high ceiling.",q:"Playoff experience gap. Barnes must play like a star."},
-  ATL:{rec:"46-36",odds:"+5000",stars:["Jalen Johnson","Trae Young"],info:"Finished 19-5! First top-6 berth in 5 years. R1 vs NYK is tough draw.",q:"Can they bottle the late-season momentum?"},
-  OKC:{rec:"64-18",odds:"+125",stars:["Shai Gilgeous-Alexander","Chet Holmgren"],info:"Best record in NBA. Defending champs. 18 months of dominance.",q:"Can they handle being the hunted? Spurs went 4-1 vs them."},
-  SAS:{rec:"57-25",odds:"+550",stars:["Victor Wembanyama","De'Aaron Fox"],info:"First playoffs since 2019. Wemby's playoff debut at 22. Went 4-1 vs OKC.",q:"Wemby has rib contusion (Apr 6). If healthy, beware."},
-  DEN:{rec:"52-30",odds:"+1100",stars:["Nikola Jokić","Jamal Murray"],info:"8th straight playoff. Jokić arguably the world's best player.",q:"Murray health is decisive for a deep run."},
-  LAL:{rec:"50-32",odds:"+2500",stars:["LeBron James","Anthony Davis"],info:"LeBron's 19th postseason at 41. First matchup with two 75k+ pts players.",q:"LeBron endurance. AD injury history looms."},
-  HOU:{rec:"49-33",odds:"+1400",stars:["Kevin Durant","Alperen Şengün"],info:"KD's 14th postseason, first with HOU. Ended season on a 10-1 run.",q:"KD must be unleashed. Şengün dominating the paint is key."},
-  MIN:{rec:"47-35",odds:"+2000",stars:["Anthony Edwards","Rudy Gobert"],info:"3rd straight deep West run. Ant Edwards top-5 player in the world.",q:"Can they finally get past the second round?"},
+  DET:{seed:"E1",rec:"60-22",odds:"+2200",stars:["Cade Cunningham","Paul Reed"],info:"First 60-win season since 1988. Defense-first identity. Cunningham finally healthy.",q:"Enough offense beyond Cunningham?"},
+  BOS:{seed:"E2",rec:"58-24",odds:"+550",stars:["Jaylen Brown","Jayson Tatum"],info:"Tatum back from Achilles. 12th straight playoff. Elite offense and defense.",q:"Tatum still shaking off rust. Pritchard inconsistency risk."},
+  NYK:{seed:"E3",rec:"53-29",odds:"+1800",stars:["Jalen Brunson","Karl-Anthony Towns"],info:"3rd straight top-3 seed. Same core, better bench. Beat BOS 3 times this season.",q:"KAT must deliver in big moments."},
+  CLE:{seed:"E4",rec:"51-31",odds:"+1100",stars:["Donovan Mitchell","James Harden"],info:"Superstar backcourt. Harden's first season in Cleveland brings veteran IQ.",q:"Two ball-dominant stars sharing the floor under pressure."},
+  TOR:{seed:"E5",rec:"48-34",odds:"+4000",stars:["Scottie Barnes","Immanuel Quickley"],info:"Snuck into #5 on final day. Young, athletic, high ceiling.",q:"Playoff experience gap. Barnes must play like a star."},
+  ATL:{seed:"E6",rec:"46-36",odds:"+5000",stars:["Jalen Johnson","Trae Young"],info:"Finished 19-5! First top-6 berth in 5 years. R1 vs NYK is tough draw.",q:"Can they bottle the late-season momentum?"},
+  OKC:{seed:"W1",rec:"64-18",odds:"+125",stars:["Shai Gilgeous-Alexander","Chet Holmgren"],info:"Best record in NBA. Defending champs. 18 months of dominance.",q:"Can they handle being the hunted? Spurs went 4-1 vs them."},
+  SAS:{seed:"W2",rec:"57-25",odds:"+550",stars:["Victor Wembanyama","De'Aaron Fox"],info:"First playoffs since 2019. Wemby's playoff debut at 22. Went 4-1 vs OKC.",q:"Wemby has rib contusion (Apr 6). If healthy, beware."},
+  DEN:{seed:"W3",rec:"52-30",odds:"+1100",stars:["Nikola Jokić","Jamal Murray"],info:"8th straight playoff. Jokić arguably the world's best player.",q:"Murray health is decisive for a deep run."},
+  LAL:{seed:"W4",rec:"50-32",odds:"+2500",stars:["LeBron James","Anthony Davis"],info:"LeBron's 19th postseason at 41. First matchup with two 75k+ pts players.",q:"LeBron endurance. AD injury history looms."},
+  HOU:{seed:"W5",rec:"49-33",odds:"+1400",stars:["Kevin Durant","Alperen Şengün"],info:"KD's 14th postseason, first with HOU. Ended season on a 10-1 run.",q:"KD must be unleashed. Şengün dominating the paint is key."},
+  MIN:{seed:"W6",rec:"47-35",odds:"+2000",stars:["Anthony Edwards","Rudy Gobert"],info:"3rd straight deep West run. Ant Edwards top-5 player in the world.",q:"Can they finally get past the second round?"},
 };
-function Teams(){
-  const [sel,setSel]=useState(null);
+
+async function fetchAllInjuries(){
+  const playoffTeams=['DET','BOS','NYK','CLE','TOR','ATL','OKC','SAS','DEN','LAL','HOU','MIN'];
+  const map={};
+  await Promise.all(playoffTeams.map(async abbr=>{
+    try{
+      const espn=T[abbr]?.e||abbr.toLowerCase();
+      const r=await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${espn}/roster`);
+      if(!r.ok) return;
+      const j=await r.json();
+      const groups=j.athletes||[];
+      const injured=groups.flatMap(g=>g.items||[]).filter(a=>{
+        const st=a.status?.type?.name||"";
+        return st&&st.toLowerCase()!=="active";
+      }).map(a=>({
+        name:a.displayName||a.shortName||"?",
+        status:a.status?.type?.name||"Out",
+        pos:a.position?.abbreviation||"",
+      }));
+      if(injured.length) map[abbr]=injured;
+    }catch{}
+  }));
+  return map;
+}
+
+function Teams({res}){
+  const [injuries,setInjuries]=useState({});
+  const [injLoading,setInjLoading]=useState(false);
+  const [expanded,setExpanded]=useState(null);
+
+  const loadInjuries=()=>{
+    setInjLoading(true);
+    fetchAllInjuries().then(m=>{setInjuries(m);setInjLoading(false);});
+  };
+  useEffect(()=>{loadInjuries();},[]);
+
+  // Seed label helper
+  const seedLabel=(abbr,placeholder)=>{
+    const d=TDATA[abbr];
+    if(d?.seed) return `#${d.seed.slice(1)} ${d.seed[0]==="E"?"East":"West"}`;
+    if(placeholder==="E7"||placeholder==="W7") return placeholder==="E7"?"#7 East":"#7 West";
+    if(placeholder==="E8"||placeholder==="W8") return placeholder==="E8"?"#8 East":"#8 West";
+    return "";
+  };
+
+  const MatchupCard=({s})=>{
+    const rt1=s.t1; // always a real team
+    const rt2=resolveTeam(s.t2,res)||s.t2; // resolve E7/E8/W7/W8
+    const d1=TDATA[rt1]||{};
+    const d2=TDATA[rt2]||{};
+    const inj1=injuries[rt1]||[];
+    const inj2=injuries[rt2]||[];
+    const isExp=expanded===s.id;
+    const result=res?.po?.[s.id];
+    const resolved2=T[rt2]; // true if Play-In resolved
+
+    const TeamCol=({abbr,placeholder,d,inj,side})=>(
+      <div style={{flex:1,padding:"14px 10px",display:"flex",flexDirection:"column",alignItems:"center",gap:5,textAlign:"center"}}>
+        <Logo abbr={abbr} size={52}/>
+        <div style={{fontWeight:900,fontSize:13,lineHeight:1.2,color:C.t1}}>{T[abbr]?.n||(placeholder?LABELS[placeholder]:abbr)||abbr}</div>
+        <div style={{fontSize:10,color:C.t3}}>{d.rec||""}{d.seed?` · ${d.seed}`:(placeholder&&!T[abbr]?` · ${LABELS[placeholder]||placeholder}`:"")}</div>
+        {d.odds&&<div style={{fontSize:10,color:C.acc,fontWeight:800}}>{d.odds}</div>}
+        {inj.length>0&&<div style={{background:"rgba(248,113,113,.12)",border:"1px solid rgba(248,113,113,.3)",borderRadius:6,padding:"3px 8px",fontSize:9,color:C.er,fontWeight:700}}>{inj.length} injured</div>}
+      </div>
+    );
+
+    return(
+      <div style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:14,marginBottom:10,overflow:"hidden"}}>
+        {/* Main row */}
+        <div style={{display:"flex",alignItems:"stretch"}}>
+          <TeamCol abbr={rt1} placeholder={null} d={d1} inj={inj1} side="left"/>
+          {/* Center */}
+          <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"10px 6px",gap:4,minWidth:44}}>
+            {result?.w
+              ?<><Logo abbr={result.w} size={18}/><div style={{fontSize:8,color:C.ok,fontWeight:800,textAlign:"center"}}>W in {result.g}</div></>
+              :<div style={{fontSize:10,fontWeight:700,color:C.t3}}>VS</div>
+            }
+            <button onClick={()=>setExpanded(isExp?null:s.id)}
+              style={{background:"transparent",border:`1px solid ${C.bdL}`,borderRadius:5,color:C.t3,fontSize:9,cursor:"pointer",padding:"2px 5px",marginTop:2}}>
+              {isExp?"▲":"▼"}
+            </button>
+          </div>
+          <TeamCol abbr={rt2} placeholder={T[rt2]?null:s.t2} d={d2} inj={inj2} side="right"/>
+        </div>
+
+        {/* Expanded details */}
+        {isExp&&(
+          <div style={{borderTop:`1px solid ${C.bdL}`,padding:14}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+              {[{abbr:rt1,d:d1,inj:inj1},{abbr:rt2,d:d2,inj:inj2}].map(({abbr,d,inj})=>(
+                <div key={abbr}>
+                  <div style={{fontWeight:800,fontSize:12,marginBottom:8,color:C.t2,display:"flex",alignItems:"center",gap:6}}>
+                    <Logo abbr={abbr} size={18}/>{T[abbr]?.a||abbr}
+                  </div>
+                  {d.stars?.length>0&&<div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:8}}>
+                    {d.stars.map(s=><span key={s} style={{background:C.bg4,border:`1px solid ${C.bdL}`,borderRadius:5,padding:"2px 7px",fontSize:10,color:C.t2}}>⭐ {s}</span>)}
+                  </div>}
+                  {d.info&&<p style={{color:C.t2,fontSize:11,lineHeight:1.5,margin:"0 0 8px"}}>{d.info}</p>}
+                  {d.q&&<div style={{background:C.bg3,borderRadius:7,padding:"7px 10px",marginBottom:8}}>
+                    <div style={{fontSize:8,color:C.t3,fontWeight:800,textTransform:"uppercase",letterSpacing:"1px",marginBottom:2}}>❓ Key Question</div>
+                    <div style={{fontSize:11,color:C.wn}}>{d.q}</div>
+                  </div>}
+                  {inj.length>0&&(
+                    <div style={{background:"rgba(248,113,113,.07)",border:"1px solid rgba(248,113,113,.2)",borderRadius:8,padding:"8px 10px"}}>
+                      <div style={{fontSize:8,fontWeight:800,color:C.er,textTransform:"uppercase",letterSpacing:"1px",marginBottom:6}}>🏥 Injury Report</div>
+                      {inj.map((p,i)=>(
+                        <div key={i} style={{display:"flex",alignItems:"center",gap:6,marginBottom:i<inj.length-1?4:0}}>
+                          <span style={{fontSize:8,background:"rgba(248,113,113,.2)",color:C.er,borderRadius:4,padding:"1px 5px",fontWeight:700,whiteSpace:"nowrap"}}>{p.status}</span>
+                          <span style={{fontSize:11,color:C.t2}}>{p.name}</span>
+                          {p.pos&&<span style={{fontSize:9,color:C.t3}}>{p.pos}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {inj.length===0&&!injLoading&&<div style={{fontSize:10,color:C.ok}}>✓ No injuries reported</div>}
+                  {!d.info&&<div style={{color:C.t3,fontSize:11}}>Details not available yet</div>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const r1Series=SERIES.filter(s=>s.r==="r1");
   return(
     <div>
-      <h2 style={{margin:"0 0 6px",fontWeight:900,fontFamily:"Georgia,serif",fontSize:22}}>Team Profiles</h2>
-      <p style={{margin:"0 0 20px",color:C.t3,fontSize:13}}>Tap any team to see their season summary before making picks.</p>
-      {[{label:"Eastern Conference",abbrs:["DET","BOS","NYK","CLE","TOR","ATL"]},{label:"Western Conference",abbrs:["OKC","SAS","DEN","LAL","HOU","MIN"]}].map(({label,abbrs})=>(
-        <div key={label} style={{marginBottom:24}}>
-          <div style={{fontSize:10,fontWeight:800,color:C.t3,textTransform:"uppercase",letterSpacing:"2px",marginBottom:10}}>{label}</div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(250px,1fr))",gap:9}}>
-            {abbrs.map(abbr=>{
-              const t=T[abbr], d=TDATA[abbr]||{}, open=sel===abbr;
-              return <button key={abbr} onClick={()=>setSel(open?null:abbr)} style={{background:open?C.bg3:C.bg2,border:`1px solid ${open?(t?.c||C.acc):C.bdL}`,borderRadius:13,padding:14,cursor:"pointer",textAlign:"left",color:C.t1,width:"100%"}}>
-                <div style={{display:"flex",alignItems:"center",gap:10}}>
-                  <Logo abbr={abbr} size={46}/>
-                  <div style={{flex:1}}><div style={{fontWeight:800,fontSize:14}}>{t?.n}</div><div style={{fontSize:11,color:C.t3}}>{d.rec}</div></div>
-                  <div style={{textAlign:"right"}}><div style={{fontSize:10,color:C.t3}}>Odds</div><div style={{fontWeight:900,color:C.acc,fontSize:13}}>{d.odds}</div></div>
-                  <span style={{color:C.t3,fontSize:11}}>{open?"▲":"▼"}</span>
-                </div>
-                {open&&<div style={{borderTop:`1px solid ${C.bd}`,marginTop:12,paddingTop:12}}>
-                  <p style={{color:C.t2,fontSize:12,lineHeight:1.6,margin:"0 0 8px"}}>{d.info}</p>
-                  <div style={{background:C.bg4,borderRadius:7,padding:"8px 10px",marginBottom:8}}><div style={{fontSize:9,fontWeight:800,color:C.t3,textTransform:"uppercase",letterSpacing:"1px",marginBottom:2}}>Key Question</div><div style={{fontSize:11,color:C.wn}}>{d.q}</div></div>
-                  <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{(d.stars||[]).map(s=><span key={s} style={{background:C.bg0,border:`1px solid ${C.bd}`,borderRadius:5,padding:"2px 7px",fontSize:11}}>{s}</span>)}</div>
-                </div>}
-              </button>;
-            })}
-          </div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,flexWrap:"wrap",gap:8}}>
+        <div>
+          <h2 style={{margin:"0 0 3px",fontWeight:900,fontFamily:"Georgia,serif",fontSize:22}}>Playoff Matchups</h2>
+          <p style={{margin:0,color:C.t3,fontSize:12}}>Tap ▼ for team details, scouting report & live injury status</p>
         </div>
-      ))}
+        <button onClick={loadInjuries} disabled={injLoading} style={{...btn.g,fontSize:12}}>
+          {injLoading?"⏳ Loading…":"🔄 Refresh Injuries"}
+        </button>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:20}}>
+        <div>
+          <div style={{fontSize:10,fontWeight:800,color:"#60a5fa",textTransform:"uppercase",letterSpacing:"2px",marginBottom:10,paddingBottom:5,borderBottom:`1px solid ${C.bdL}`}}>Eastern Conference</div>
+          {r1Series.filter(s=>s.conf==="E").map(s=><MatchupCard key={s.id} s={s}/>)}
+        </div>
+        <div>
+          <div style={{fontSize:10,fontWeight:800,color:C.acc,textTransform:"uppercase",letterSpacing:"2px",marginBottom:10,paddingBottom:5,borderBottom:`1px solid ${C.bdL}`}}>Western Conference</div>
+          {r1Series.filter(s=>s.conf==="W").map(s=><MatchupCard key={s.id} s={s}/>)}
+        </div>
+      </div>
     </div>
   );
 }
@@ -929,14 +1081,14 @@ function Profile({me,onSavePhoto}){
 
 // ─── ALL PICKS ────────────────────────────────────────────────────────────────
 function AllPicks({all,res,cfg}){
-  const [view,setView]=useState(cfg.rPi?"playin":"playoff");
+  const [view,setView]=useState(cfg.rPiPicks?"playin":cfg.rPo?"playoff":"playin");
   const [rnd,setRnd]=useState("r1");
   return(
     <div>
       <h2 style={{margin:"0 0 6px",fontWeight:900,fontFamily:"Georgia,serif",fontSize:22}}>All Predictions</h2>
       <p style={{margin:"0 0 16px",color:C.t3,fontSize:13}}>Revealed now that playoffs have started!</p>
       <div style={{display:"flex",gap:6,marginBottom:16,flexWrap:"wrap"}}>
-        {cfg.rPi&&<button onClick={()=>setView("playin")} style={view==="playin"?btn.a:btn.g}>⚡ Play-In</button>}
+        {cfg.rPiPicks&&<button onClick={()=>setView("playin")} style={view==="playin"?btn.a:btn.g}>⚡ Play-In</button>}
         {cfg.rPo&&<button onClick={()=>setView("playoff")} style={view==="playoff"?btn.a:btn.g}>🏀 Playoffs</button>}
       </div>
       {view==="playin"&&PLAYIN.filter(m=>m.teams[0]&&m.teams[1]).map(m=>{
@@ -998,11 +1150,28 @@ function Games(){
     setLoading(true);
     fetchPlayoffGames().then(evts=>{setEvents(evts);setLoading(false);});
   },[tick]);
-  const sorted=[...events].sort((a,b)=>new Date(a.date)-new Date(b.date));
+
+  // Only keep games that have a series (playoff/play-in) — filters out regular season stragglers
+  const playoffEvents=events.filter(ev=>ev.competitions?.[0]?.series||ev.season?.type?.id==="3"||ev.season?.type===3);
+  const sorted=[...playoffEvents].sort((a,b)=>new Date(a.date)-new Date(b.date));
   const past=sorted.filter(e=>e.competitions?.[0]?.status?.type?.completed);
   const upcoming=sorted.filter(e=>!e.competitions?.[0]?.status?.type?.completed);
 
-  const GCard=({ev})=>{
+  // Group upcoming games by date (day string)
+  const dayKey=dt=>dt.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+  const isToday=dt=>{const t=new Date();return dt.toDateString()===t.toDateString();};
+  const isTomorrow=dt=>{const t=new Date();t.setDate(t.getDate()+1);return dt.toDateString()===t.toDateString();};
+  const dayLabel=dt=>isToday(dt)?"Today 🔥":isTomorrow(dt)?"Tomorrow":dayKey(dt);
+
+  const grouped=upcoming.reduce((acc,ev)=>{
+    const dt=new Date(ev.date);
+    const label=dayLabel(dt);
+    if(!acc[label]) acc[label]=[];
+    acc[label].push(ev);
+    return acc;
+  },{});
+
+  const GCard=({ev,showDate=false})=>{
     const comp=ev.competitions?.[0];if(!comp)return null;
     const cs=comp.competitors||[];
     const away=cs.find(c=>c.homeAway==="away")||cs[0];
@@ -1012,28 +1181,45 @@ function Games(){
     const live=!done&&comp.status?.type?.id!=="1";
     const dt=new Date(ev.date);
     const series=comp.series?.summary;
+    const awinscore=parseInt(away.score)||0;
+    const hwinscore=parseInt(home.score)||0;
     return(
-      <div style={{background:C.bg2,border:`1px solid ${live?C.er+"44":C.bdL}`,borderRadius:12,padding:"12px 16px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
-        <div style={{flex:1,minWidth:200}}>
-          {[away,home].map((c,i)=>(
-            <div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:i===0?6:0}}>
-              <Logo abbr={c.team?.abbreviation} size={28}/>
-              <span style={{fontWeight:c.winner?800:500,color:c.winner?C.t1:C.t2,fontSize:13,flex:1}}>
-                {c.team?.displayName||c.team?.abbreviation}
-                {c.homeAway==="home"&&<span style={{color:C.t3,fontSize:10}}> (H)</span>}
-              </span>
-              {done&&<span style={{fontSize:20,fontWeight:900,color:c.winner?C.ok:C.t2,minWidth:32,textAlign:"right"}}>{c.score}</span>}
+      <div style={{background:C.bg2,border:`1px solid ${live?C.er+"55":done?C.bdL:C.bdL}`,borderRadius:13,overflow:"hidden",boxShadow:live?"0 0 14px rgba(248,113,113,.15)":"none"}}>
+        {/* Series label bar */}
+        {series&&<div style={{background:C.bg3,borderBottom:`1px solid ${C.bdL}`,padding:"4px 12px",fontSize:10,color:C.t3,fontWeight:700,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span>🏀 {series}</span>
+          {live&&<span style={{color:C.er,fontWeight:800,fontSize:10}}>🔴 LIVE · {comp.status?.displayClock}</span>}
+          {done&&<span style={{color:C.ok,fontWeight:700}}>FINAL</span>}
+          {!done&&!live&&<span style={{color:C.acc,fontWeight:700}}>{dt.toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit'})}</span>}
+        </div>}
+        <div style={{padding:"10px 14px",display:"flex",alignItems:"center",gap:10}}>
+          {/* Away */}
+          <div style={{flex:1,display:"flex",alignItems:"center",gap:8}}>
+            <Logo abbr={away.team?.abbreviation} size={34}/>
+            <div style={{flex:1}}>
+              <div style={{fontWeight:done&&away.winner?900:600,color:done&&away.winner?C.t1:C.t2,fontSize:13}}>{away.team?.displayName||away.team?.abbreviation}</div>
+              <div style={{fontSize:10,color:C.t3}}>Away</div>
             </div>
-          ))}
-        </div>
-        <div style={{textAlign:"center",minWidth:80}}>
-          {done&&<div style={{color:C.ok,fontSize:11,fontWeight:700}}>FINAL</div>}
-          {live&&<div style={{color:C.er,fontSize:11,fontWeight:800}}>🔴 LIVE<br/><span style={{fontSize:10}}>{comp.status?.displayClock}</span></div>}
-          {!done&&!live&&<div>
-            <div style={{color:C.acc,fontWeight:700,fontSize:13}}>{dt.toLocaleDateString('en',{month:'short',day:'numeric'})}</div>
-            <div style={{color:C.t2,fontSize:11}}>{dt.toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit'})}</div>
-          </div>}
-          {series&&<div style={{fontSize:10,color:C.t3,marginTop:3}}>{series}</div>}
+            {done&&<div style={{fontSize:22,fontWeight:900,color:away.winner?C.ok:C.t2,minWidth:28,textAlign:"right"}}>{away.score}</div>}
+          </div>
+          {/* Center divider */}
+          <div style={{textAlign:"center",padding:"0 6px",color:C.t3}}>
+            {!done&&!live&&<div>
+              <div style={{fontSize:11,fontWeight:800,color:C.acc}}>{dt.toLocaleDateString('en',{month:'short',day:'numeric'})}</div>
+              <div style={{fontSize:10,color:C.t3}}>vs</div>
+            </div>}
+            {live&&<div style={{color:C.er,fontWeight:900,fontSize:12}}>LIVE</div>}
+            {done&&<div style={{color:C.t3,fontSize:11}}>—</div>}
+          </div>
+          {/* Home */}
+          <div style={{flex:1,display:"flex",alignItems:"center",gap:8,flexDirection:"row-reverse"}}>
+            <Logo abbr={home.team?.abbreviation} size={34}/>
+            <div style={{flex:1,textAlign:"right"}}>
+              <div style={{fontWeight:done&&home.winner?900:600,color:done&&home.winner?C.t1:C.t2,fontSize:13}}>{home.team?.displayName||home.team?.abbreviation}</div>
+              <div style={{fontSize:10,color:C.t3}}>Home</div>
+            </div>
+            {done&&<div style={{fontSize:22,fontWeight:900,color:home.winner?C.ok:C.t2,minWidth:28,textAlign:"left"}}>{home.score}</div>}
+          </div>
         </div>
       </div>
     );
@@ -1044,27 +1230,45 @@ function Games(){
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:8}}>
         <div>
           <h2 style={{margin:"0 0 2px",fontWeight:900,fontFamily:"Georgia,serif",fontSize:22}}>Playoff Schedule</h2>
-          <p style={{margin:0,color:C.t3,fontSize:13}}>Live scores & upcoming games via ESPN</p>
+          <p style={{margin:0,color:C.t3,fontSize:12}}>Live scores & upcoming games via ESPN</p>
         </div>
         <button onClick={()=>setTick(t=>t+1)} style={btn.g} disabled={loading}>{loading?"⏳ Loading…":"🔄 Refresh"}</button>
       </div>
       {loading&&<div style={{textAlign:"center",color:C.t3,padding:40}}>🏀 Loading schedule…</div>}
-      {!loading&&upcoming.length>0&&(
-        <div style={{marginBottom:24}}>
-          <div style={{fontSize:10,fontWeight:800,color:C.acc,textTransform:"uppercase",letterSpacing:"2px",marginBottom:10}}>📅 Upcoming</div>
-          <div style={{display:"flex",flexDirection:"column",gap:8}}>{upcoming.slice(0,10).map(ev=><GCard key={ev.id} ev={ev}/>)}</div>
+
+      {/* ── Upcoming: day-by-day scheduler ── */}
+      {!loading&&Object.keys(grouped).length>0&&(
+        <div style={{marginBottom:28}}>
+          <div style={{fontSize:10,fontWeight:800,color:C.acc,textTransform:"uppercase",letterSpacing:"2px",marginBottom:14}}>📅 Upcoming Games</div>
+          {Object.entries(grouped).map(([day,evs])=>(
+            <div key={day} style={{marginBottom:20}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                <div style={{fontSize:12,fontWeight:900,color:day.startsWith("Today")?"#f97316":day.startsWith("Tomorrow")?"#fbbf24":C.t2}}>{day}</div>
+                <div style={{flex:1,height:1,background:C.bdL}}/>
+                <div style={{fontSize:10,color:C.t3,fontWeight:700}}>{evs.length} game{evs.length>1?"s":""}</div>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                {evs.map(ev=><GCard key={ev.id} ev={ev}/>)}
+              </div>
+            </div>
+          ))}
         </div>
       )}
+
+      {/* ── Recent Results: playoff only ── */}
       {!loading&&past.length>0&&(
         <div>
-          <div style={{fontSize:10,fontWeight:800,color:C.t3,textTransform:"uppercase",letterSpacing:"2px",marginBottom:10}}>Recent Results</div>
-          <div style={{display:"flex",flexDirection:"column",gap:8}}>{[...past].reverse().slice(0,12).map(ev=><GCard key={ev.id} ev={ev}/>)}</div>
+          <div style={{fontSize:10,fontWeight:800,color:C.t3,textTransform:"uppercase",letterSpacing:"2px",marginBottom:10}}>📋 Recent Results</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {[...past].reverse().slice(0,15).map(ev=><GCard key={ev.id} ev={ev}/>)}
+          </div>
         </div>
       )}
-      {!loading&&events.length===0&&(
+
+      {!loading&&playoffEvents.length===0&&(
         <div style={{textAlign:"center",color:C.t3,padding:40,background:C.bg2,borderRadius:14}}>
           <div style={{fontSize:36,marginBottom:8}}>📅</div>
-          <div>No games found yet — check back soon.</div>
+          <div>No playoff games found yet — check back soon.</div>
         </div>
       )}
     </div>
@@ -1236,6 +1440,19 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
     finals:cfg.deadlines?.finals?new Date(cfg.deadlines.finals).toISOString().slice(0,16):"",
   });
   const [leagueName,setLeagueName]=useState(cfg.leagueName||"NBA Playoffs 2026");
+  // Sync local settings state if cfg changes externally (e.g. another device saves)
+  useEffect(()=>{
+    setDeadlines({
+      pi:cfg.deadlines?.pi?new Date(cfg.deadlines.pi).toISOString().slice(0,16):"",
+      r1:cfg.deadlines?.r1?new Date(cfg.deadlines.r1).toISOString().slice(0,16):(cfg.deadline?cfg.deadline.slice(0,16):""),
+      r2:cfg.deadlines?.r2?new Date(cfg.deadlines.r2).toISOString().slice(0,16):"",
+      r3:cfg.deadlines?.r3?new Date(cfg.deadlines.r3).toISOString().slice(0,16):"",
+      finals:cfg.deadlines?.finals?new Date(cfg.deadlines.finals).toISOString().slice(0,16):"",
+    });
+    setLeagueName(cfg.leagueName||"NBA Playoffs 2026");
+    setChampIn(res.champ||"");
+    setMvpIn(res.mvp||"");
+  },[cfg,res]);
   const [prizes,setPrizes]=useState({p1:cfg.prizes?.p1||"",p2:cfg.prizes?.p2||"",p3:cfg.prizes?.p3||""});
   const [settingsSaved,setSettingsSaved]=useState(false);
 
@@ -1267,7 +1484,8 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
       <header style={{background:C.bg1,borderBottom:`1px solid ${C.bd}`,padding:"12px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}><span style={{fontSize:22}}>⚙️</span><div><div style={{fontWeight:900,fontSize:16,fontFamily:"Georgia,serif"}}>Admin Panel</div><div style={{fontSize:9,color:C.t3,letterSpacing:"2px",textTransform:"uppercase"}}>{cfg.leagueName||"NBA Playoffs 2026"}</div></div></div>
         <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}>
-          <button onClick={()=>setCfg(p=>({...p,rPi:!p.rPi}))} style={cfg.rPi?btn.s:btn.w}>{cfg.rPi?"⚡ Play-In Shown":"⚡ Show Play-In"}</button>
+          <button onClick={()=>setCfg(p=>({...p,rPi:!p.rPi}))} style={cfg.rPi?btn.s:btn.w}>{cfg.rPi?"⚡ Scores On":"⚡ Show Scores"}</button>
+          <button onClick={()=>setCfg(p=>({...p,rPiPicks:!p.rPiPicks}))} style={cfg.rPiPicks?btn.s:btn.w}>{cfg.rPiPicks?"👀 PI Picks Shown":"👀 Show PI Picks"}</button>
           <button onClick={()=>setCfg(p=>({...p,rPo:!p.rPo}))} style={cfg.rPo?btn.s:btn.w}>{cfg.rPo?"🔓 Playoffs Shown":"🔒 Show Playoffs"}</button>
           <button onClick={logout} style={btn.g}>← Exit</button>
         </div>
