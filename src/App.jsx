@@ -256,7 +256,7 @@ export default function App(){
 
   // ── Load from Supabase + Realtime subscriptions ───────────────────────────
   useEffect(()=>{
-    let resCh, cfgCh;
+    let resCh, cfgCh, usersCh;
     (async()=>{
       const [uRes,rRes,cRes]=await Promise.all([
         sb.from('users').select('*'),
@@ -285,7 +285,13 @@ export default function App(){
         p=>{if(p.new?.data) setCfgRaw(p.new.data);})
       .subscribe();
 
-    return ()=>{sb.removeChannel(resCh);sb.removeChannel(cfgCh);};
+    // Realtime for user picks (pi/po updates from any device)
+    usersCh=sb.channel('users_rt')
+      .on('postgres_changes',{event:'UPDATE',schema:'public',table:'users'},
+        p=>{if(p.new) setUsers(prev=>prev.map(u=>u.id===p.new.id?{...p.new,photo:p.new.photo_url,po:p.new.po||{},pi:p.new.pi||{}}:u));})
+      .subscribe();
+
+    return ()=>{sb.removeChannel(resCh);sb.removeChannel(cfgCh);sb.removeChannel(usersCh);};
   },[]);
 
   const all=[...users,AI];
