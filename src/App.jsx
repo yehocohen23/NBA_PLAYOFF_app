@@ -173,19 +173,24 @@ const pcol=(u,i)=>u?.isAI?C.ai:PC[i%PC.length];
 
 // ─── ESPN / NBA SCHEDULE API ─────────────────────────────────────────────────
 const ESPN_SB='https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard';
+// Hardcoded playoff cutoff — Play-In starts April 14; any game on/after this is post-season
+const PLAYOFF_START=new Date('2026-04-14T00:00:00');
 async function fetchPlayoffGames(){
   const today=new Date();
-  const s=new Date(today);s.setDate(today.getDate()-21);
+  // Never look back before April 13 (avoids regular season bleed-in)
+  const startMs=Math.max(new Date('2026-04-13').getTime(),today.getTime()-3*86400000);
+  const s=new Date(startMs);
   const e=new Date(today);e.setDate(today.getDate()+21);
   const fmt=d=>`${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
   try{
     const r=await fetch(`${ESPN_SB}?dates=${fmt(s)}-${fmt(e)}&limit=200`);
-    if(r.ok){const j=await r.json();if((j.events||[]).length>3)return j.events;}
+    if(r.ok){const j=await r.json();if((j.events||[]).length>0)return j.events;}
   }catch{}
-  // Fallback: one call per day
+  // Fallback: one call per day from April 13 onwards
   const all=[];const tasks=[];
-  for(let i=-14;i<=14;i++){
-    const d=new Date(today);d.setDate(today.getDate()+i);const ds=fmt(d);
+  const days=Math.ceil((e-s)/86400000);
+  for(let i=0;i<=days;i++){
+    const d=new Date(s.getTime()+i*86400000);const ds=fmt(d);
     tasks.push(fetch(`${ESPN_SB}?dates=${ds}`).then(r=>r.ok?r.json():{events:[]}).then(j=>j.events||[]).catch(()=>[]));
   }
   const res=await Promise.all(tasks);res.forEach(arr=>all.push(...arr));
@@ -193,11 +198,11 @@ async function fetchPlayoffGames(){
 }
 // ESPN numeric team IDs (for injuries API)
 const ESPN_IDS={DET:8,BOS:2,NYK:18,CLE:5,TOR:28,ATL:1,OKC:25,SAS:24,DEN:7,LAL:13,HOU:10,MIN:16,ORL:19,PHX:21,LAC:12,GSW:9};
-// Compute current series win totals from ESPN completed games
+// Compute current series win totals from ESPN completed games (date-based filter, not season type)
 async function fetchSeriesScores(){
   const evts=await fetchPlayoffGames();
-  const done=evts.filter(e=>e.competitions?.[0]?.status?.type?.completed&&
-    (e.competitions?.[0]?.series||e.season?.type?.id==="3"||e.season?.type===3));
+  const done=evts.filter(e=>
+    e.competitions?.[0]?.status?.type?.completed&&new Date(e.date)>=PLAYOFF_START);
   const map={};
   done.forEach(ev=>{
     const cs=ev.competitions?.[0]?.competitors||[];if(cs.length<2)return;
@@ -206,7 +211,27 @@ async function fetchSeriesScores(){
     map[key].games++;
     cs.forEach(c=>{if(c.winner)map[key].wins[c.team.abbreviation]=(map[key].wins[c.team.abbreviation]||0)+1;});
   });
-  return map;
+  return map;}
+// Fetch game stats (leaders + team stats) from ESPN summary endpoint
+async function fetchGameStats(eventId){
+  try{
+    const r=await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=${eventId}`);
+    if(!r.ok)return null;
+    const j=await r.json();
+    // Extract top leaders per team
+    const leaders=(j.leaders||[]).map(tl=>({
+      teamAbbr:tl.team?.abbreviation,
+      pts:tl.leaders?.find(l=>l.name==="points")?.leaders?.[0],
+      reb:tl.leaders?.find(l=>l.name==="rebounds")?.leaders?.[0],
+      ast:tl.leaders?.find(l=>l.name==="assists")?.leaders?.[0],
+    }));
+    // Extract team box score stats
+    const teams=(j.boxscore?.teams||[]).map(bt=>({
+      teamAbbr:bt.team?.abbreviation,
+      stats:Object.fromEntries((bt.statistics||[]).map(s=>[s.name,s.displayValue])),
+    }));
+    return {leaders,teams};
+  }catch{return null;}
 }
 
 // ─── COUNTDOWN ───────────────────────────────────────────────────────────────
@@ -1208,8 +1233,8 @@ function Games(){
     fetchPlayoffGames().then(evts=>{setEvents(evts);setLoading(false);});
   },[tick]);
 
-  // Only keep playoff/play-in games
-  const playoffEvents=events.filter(ev=>ev.competitions?.[0]?.series||ev.season?.type?.id==="3"||ev.season?.type===3);
+  // Keep only Play-In + Playoff games: use date >= April 14 (reliable, avoids season-type guessing)
+  const playoffEvents=events.filter(ev=>new Date(ev.date)>=PLAYOFF_START);
   const sorted=[...playoffEvents].sort((a,b)=>new Date(a.date)-new Date(b.date));
   const past=[...sorted].filter(e=>e.competitions?.[0]?.status?.type?.completed).reverse();
   const upcoming=sorted.filter(e=>!e.competitions?.[0]?.status?.type?.completed);
@@ -1236,17 +1261,24 @@ function Games(){
     const series=comp.series?.summary;
     const ilT=ilTime(ev.date);
     const ilD=ilDate(ev.date);
+    const [showStats,setShowStats]=useState(false);
+    const [stats,setStats]=useState(null);
+    const [statsLoading,setStatsLoading]=useState(false);
+    const toggleStats=()=>{
+      if(!showStats&&!stats){
+        setStatsLoading(true);
+        fetchGameStats(ev.id).then(s=>{setStats(s);setStatsLoading(false);});
+      }
+      setShowStats(p=>!p);
+    };
     return(
-      <div style={{background:C.bg2,border:`1px solid ${live?C.er+"55":done?C.bdL:C.bdL}`,borderRadius:13,overflow:"hidden",boxShadow:live?"0 0 14px rgba(248,113,113,.15)":"none"}}>
+      <div style={{background:C.bg2,border:`1px solid ${live?C.er+"55":C.bdL}`,borderRadius:13,overflow:"hidden",boxShadow:live?"0 0 14px rgba(248,113,113,.15)":"none"}}>
         {/* Top info bar */}
         <div style={{background:C.bg3,borderBottom:`1px solid ${C.bdL}`,padding:"5px 12px",fontSize:10,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:4}}>
           <span style={{color:C.t2,fontWeight:700}}>{series?"🏀 "+series:"🏀 Playoff"}</span>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
-            {/* Sport5 badge */}
-            {!done&&<span style={{background:"#1a3a5c",border:"1px solid #2563eb55",borderRadius:5,padding:"1px 7px",color:"#60a5fa",fontWeight:800,fontSize:9,letterSpacing:.5}}>📺 Sport5</span>}
-            {/* Israeli time */}
             {!done&&!live&&<span style={{color:C.acc,fontWeight:800,fontSize:11}}>{ilT} 🇮🇱 <span style={{color:C.t3,fontWeight:600,fontSize:9}}>{ilD}</span></span>}
-            {live&&<span style={{color:C.er,fontWeight:800,fontSize:10}}>🔴 LIVE · {comp.status?.displayClock} <span style={{color:"#f97316",marginLeft:4}}>📺 Sport5</span></span>}
+            {live&&<span style={{color:C.er,fontWeight:800,fontSize:10}}>🔴 LIVE · {comp.status?.displayClock}</span>}
             {done&&<span style={{color:C.ok,fontWeight:700}}>✓ FINAL</span>}
           </div>
         </div>
@@ -1279,6 +1311,51 @@ function Games(){
             {(done||live)&&<div style={{fontSize:22,fontWeight:900,color:home.winner?C.ok:C.t2,minWidth:28,textAlign:"left"}}>{home.score}</div>}
           </div>
         </div>
+        {/* Stats toggle for completed games */}
+        {done&&(
+          <div>
+            <button onClick={toggleStats} style={{width:"100%",background:"transparent",border:"none",borderTop:`1px solid ${C.bdL}`,padding:"6px",color:C.t3,fontSize:10,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
+              📊 {showStats?"Hide Stats":"Show Stats"} {statsLoading?"⏳":""}
+            </button>
+            {showStats&&(
+              <div style={{borderTop:`1px solid ${C.bdL}`,padding:"10px 14px",background:C.bg3}}>
+                {statsLoading&&<div style={{textAlign:"center",color:C.t3,fontSize:11,padding:8}}>Loading stats…</div>}
+                {!statsLoading&&stats&&(
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                    {[away,home].map((side,si)=>{
+                      const abbr=side.team?.abbreviation;
+                      const tl=stats.leaders?.find(l=>l.teamAbbr===abbr);
+                      const ts=stats.teams?.find(t=>t.teamAbbr===abbr);
+                      const fg=ts?.stats?.fieldGoalPct||ts?.stats?.fieldGoalsAttempted;
+                      const threePct=ts?.stats?.threePointFieldGoalPct;
+                      const reb=ts?.stats?.totalRebounds||ts?.stats?.rebounds;
+                      const ast=ts?.stats?.assists;
+                      const tov=ts?.stats?.turnovers;
+                      return(
+                        <div key={abbr} style={{textAlign:si===1?"right":"left"}}>
+                          <div style={{fontWeight:800,fontSize:11,color:C.t2,marginBottom:5,display:"flex",alignItems:"center",gap:4,flexDirection:si===1?"row-reverse":"row"}}>
+                            <Logo abbr={abbr} size={14}/>{T[abbr]?.a||abbr}
+                          </div>
+                          {tl?.pts&&<div style={{fontSize:11,color:C.t1,marginBottom:2}}>🏀 <b>{tl.pts.displayValue}</b> — {tl.pts.athlete?.displayName?.split(' ').pop()||"pts"}</div>}
+                          {tl?.reb&&<div style={{fontSize:10,color:C.t2,marginBottom:2}}>🔄 <b>{tl.reb.displayValue}</b> REB — {tl.reb.athlete?.displayName?.split(' ').pop()||""}</div>}
+                          {tl?.ast&&<div style={{fontSize:10,color:C.t2,marginBottom:4}}>🎯 <b>{tl.ast.displayValue}</b> AST — {tl.ast.athlete?.displayName?.split(' ').pop()||""}</div>}
+                          <div style={{fontSize:9,color:C.t3,display:"flex",gap:8,flexWrap:"wrap",flexDirection:si===1?"row-reverse":"row"}}>
+                            {fg&&<span>FG {fg}</span>}
+                            {threePct&&<span>3P {threePct}</span>}
+                            {reb&&<span>{reb} REB</span>}
+                            {ast&&<span>{ast} AST</span>}
+                            {tov&&<span>{tov} TOV</span>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {!statsLoading&&!stats&&<div style={{textAlign:"center",color:C.t3,fontSize:11}}>Stats unavailable for this game.</div>}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     );
   };
@@ -1290,13 +1367,19 @@ function Games(){
 
   return(
     <div>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexWrap:"wrap",gap:8}}>
         <div>
           <h2 style={{margin:"0 0 2px",fontWeight:900,fontFamily:"Georgia,serif",fontSize:22}}>Playoff Schedule</h2>
-          <p style={{margin:0,color:C.t3,fontSize:12}}>Live scores via ESPN · Times shown in 🇮🇱 Israeli time</p>
+          <p style={{margin:0,color:C.t3,fontSize:12}}>Live scores via ESPN · Game times shown in 🇮🇱 Israeli time</p>
         </div>
         <button onClick={()=>setTick(t=>t+1)} style={btn.g} disabled={loading}>{loading?"⏳ Loading…":"🔄 Refresh"}</button>
       </div>
+      {/* Sport5 broadcast note */}
+      <a href="https://www.sport5.co.il/" target="_blank" rel="noreferrer"
+        style={{display:"inline-flex",alignItems:"center",gap:6,background:"#0f2040",border:"1px solid #2563eb44",borderRadius:8,padding:"5px 12px",fontSize:11,color:"#93c5fd",fontWeight:700,textDecoration:"none",marginBottom:14}}>
+        📺 Check sport5.co.il for broadcast channels & times
+        <span style={{fontSize:9,color:"#60a5fa",opacity:.8}}>↗</span>
+      </a>
 
       {/* Sub-tabs */}
       <div style={{display:"flex",gap:4,background:C.bg2,borderRadius:22,padding:3,marginBottom:18,width:"fit-content"}}>
@@ -1360,8 +1443,8 @@ function NBASync({res,setPoR,setPiR}){
   const load=()=>{setLoading(true);fetchPlayoffGames().then(evts=>{setEvents(evts);setLoading(false);});};
   useEffect(()=>{load();},[]);
 
-  // All completed ESPN games
-  const completedEvts=events.filter(e=>e.competitions?.[0]?.status?.type?.completed);
+  // All completed playoff/play-in games (date-based filter)
+  const completedEvts=events.filter(e=>e.competitions?.[0]?.status?.type?.completed&&new Date(e.date)>=PLAYOFF_START);
 
   // Helper: find ESPN event by two team abbreviations
   const findGame=(t1,t2)=>completedEvts.find(ev=>{
