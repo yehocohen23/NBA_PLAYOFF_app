@@ -263,7 +263,13 @@ export default function App(){
         sb.from('results').select('data').eq('id',1).single(),
         sb.from('app_config').select('data').eq('id',1).single(),
       ]);
-      if(uRes.data) setUsers(uRes.data.map(u=>({...u,photo:u.photo_url,po:u.po||{},pi:u.pi||{}})));
+      // Debug: log Supabase errors so we can diagnose in browser console
+      if(uRes.error) console.error('❌ USERS load error:', uRes.error.code, uRes.error.message);
+      else console.log('✅ USERS loaded:', uRes.data?.length ?? 0, 'rows');
+      if(rRes.error) console.error('❌ RESULTS load error:', rRes.error.message);
+      if(cRes.error) console.error('❌ CONFIG load error:', cRes.error.message);
+
+      if(uRes.data?.length) setUsers(uRes.data.map(u=>({...u,photo:u.photo_url,po:u.po||{},pi:u.pi||{}})));
       if(rRes.data?.data) setRes(rRes.data.data);
       if(cRes.data?.data) setCfgRaw(cRes.data.data);
       setLoading(false);
