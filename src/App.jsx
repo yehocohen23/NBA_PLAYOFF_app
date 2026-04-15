@@ -291,7 +291,7 @@ export default function App(){
   const reg=async(name,email,pw)=>{
     const normalEmail=email.trim().toLowerCase();
     if(normalEmail==="admin") return "That email is reserved";
-    if(users.find(u=>u.email.toLowerCase()===normalEmail)) return "Email already in use";
+    if(users.find(u=>u.email?.toLowerCase()===normalEmail)) return "Email already in use";
     const u={id:Date.now()+"",name,email:normalEmail,password:pw,photo_url:null,po:{},pi:{},champ:null,mvp:null};
     const {error}=await sb.from('users').insert(u);
     if(error) return "Registration error: "+error.message;
@@ -299,11 +299,13 @@ export default function App(){
     setSess({uid:u.id}); return null;
   };
   const login=(email,pw)=>{
-    if(email.trim().toLowerCase()==="admin"){
+    const emailLC=email.trim().toLowerCase();
+    if(emailLC==="admin"){
       if(pw===adminPw){setSess({admin:true});return null;}
       return "Wrong admin password";
     }
-    const u=users.find(u=>u.email.toLowerCase()===email.trim().toLowerCase()&&u.password===pw);
+    // Optional chaining (?.) prevents crash if a user has a null/undefined email
+    const u=users.find(u=>u.email?.toLowerCase()===emailLC&&u.password===pw);
     if(!u) return "Wrong email or password";
     setSess({uid:u.id}); return null;
   };
