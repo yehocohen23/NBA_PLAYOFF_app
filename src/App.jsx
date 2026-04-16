@@ -218,6 +218,21 @@ async function fetchSeriesScores(){
     cs.forEach(c=>{if(c.winner)map[key].wins[c.team.abbreviation]=(map[key].wins[c.team.abbreviation]||0)+1;});
   });
   return map;}
+// Build a map of sorted team-pair key → earliest game start time (ISO string)
+// Used to lock individual series/game picks as soon as the first game tips off
+function buildSeriesStartMap(events){
+  const map={};
+  events.filter(ev=>new Date(ev.date)>=PLAYOFF_START).forEach(ev=>{
+    const cs=ev.competitions?.[0]?.competitors||[];
+    if(cs.length<2)return;
+    const a=cs[0].team?.abbreviation, b=cs[1].team?.abbreviation;
+    if(!a||!b)return;
+    const key=[a,b].sort().join('|');
+    if(!map[key]||new Date(ev.date)<new Date(map[key]))map[key]=ev.date;
+  });
+  return map;
+}
+
 // Fetch game stats (leaders + team stats) from ESPN summary endpoint
 async function fetchGameStats(eventId){
   try{
@@ -603,10 +618,23 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
   const [saved,setSaved]=useState(false);
   const [saveErr,setSaveErr]=useState("");
   const [activeR,setActiveR]=useState(cfg.openR||"r1");
+  const [seriesStartMap,setSeriesStartMap]=useState({});
   const openIdx=ROUND_KEYS.indexOf(cfg.openR||"r1");
   // Per-round deadline
   const activeDeadline=getRoundDeadline?getRoundDeadline(activeR):null;
   const activeBettingOpen=bettingOpen&&(roundBettingOpen?roundBettingOpen(activeR):true);
+
+  // Fetch schedule once on mount to build series start-time map
+  useEffect(()=>{fetchPlayoffGames().then(evts=>setSeriesStartMap(buildSeriesStartMap(evts)));},[]);
+
+  // Returns true if this series' first game has already started (or global betting is closed)
+  const isSeriesLocked=(s)=>{
+    if(!activeBettingOpen)return true;
+    const ra=resolveTeam(s.t1,res), rb=resolveTeam(s.t2,res);
+    if(!ra||!rb||!T[ra]||!T[rb])return false;
+    const start=seriesStartMap[[ra,rb].sort().join('|')];
+    return start?new Date()>=new Date(start):false;
+  };
 
   // Split series by conference for current round
   const allRoundSeries=SERIES.filter(s=>s.r===activeR);
@@ -617,9 +645,9 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
 
   const setPred=(sid,field,val)=>{setSaveErr("");setDraft(p=>({...p,[sid]:{...(p[sid]||{}),[field]:field==="g"?parseInt(val):val}}));};
   const doSave=()=>{
-    // Validate: every series with a winner must also have a game count
+    // Validate: every unlocked series with a winner must also have a game count
     const allOpenSeries=SERIES.filter(s=>ROUND_KEYS.indexOf(s.r)<=openIdx);
-    const incomplete=allOpenSeries.filter(s=>draft[s.id]?.w&&!draft[s.id]?.g);
+    const incomplete=allOpenSeries.filter(s=>!isSeriesLocked(s)&&draft[s.id]?.w&&!draft[s.id]?.g);
     if(incomplete.length>0){
       setSaveErr(`⚠️ נא לבחור גם כמה משחקים ב-${incomplete.length} סדרה${incomplete.length>1?"ות":""} (${incomplete.map(s=>sn(resolveTeam(s.t1,res)||s.t1)+" vs "+sn(resolveTeam(s.t2,res)||s.t2)).join(", ")})`);
       return;
@@ -637,13 +665,16 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
     const resolvedPred=pred?.w?{...pred,w:resolveTeam(pred.w,res)||pred.w}:pred;
     const sc=scoreS(resolvedPred,real,roundPts);
     const bg=BG[sc.t];
+    const locked=isSeriesLocked(s);
     return(
-      <div style={{background:sc.t!=="pending"?bg.bg:C.bg2,border:`1px solid ${sc.t!=="pending"?bg.c:C.bdL}`,borderRadius:14,padding:16}}>
+      <div style={{background:sc.t!=="pending"?bg.bg:C.bg2,border:`1px solid ${sc.t!=="pending"?bg.c:locked&&!real?.w?"rgba(248,113,113,.3)":C.bdL}`,borderRadius:14,padding:16}}>
+        {/* Per-series lock badge — shown when game started but result not yet entered */}
+        {locked&&!real?.w&&<div style={{background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",borderRadius:7,padding:"4px 10px",marginBottom:8,fontSize:11,color:C.er,fontWeight:700,display:"flex",alignItems:"center",gap:5}}>🔒 Game started — pick is locked</div>}
         <div style={{display:"flex",background:C.bg3,borderRadius:10,overflow:"hidden",marginBottom:10}}>
           {[{k:s.t1},{k:s.t2}].map(({k},idx)=>{
             const rk=resolveTeam(k,res)||k; // resolved for display (logo + name)
             const isSel=pred.w===k;
-            return <button key={k} onClick={()=>setPred(s.id,"w",k)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"10px 6px",border:"none",cursor:"pointer",background:isSel?`linear-gradient(${idx===0?"135deg":"225deg"},rgba(249,115,22,.2),transparent)`:"transparent",outline:isSel?`2px solid ${C.acc}`:"none",outlineOffset:-2,position:"relative"}}>
+            return <button key={k} onClick={locked?undefined:()=>setPred(s.id,"w",k)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"10px 6px",border:"none",cursor:locked?"default":"pointer",background:isSel?`linear-gradient(${idx===0?"135deg":"225deg"},rgba(249,115,22,.2),transparent)`:"transparent",outline:isSel?`2px solid ${C.acc}`:"none",outlineOffset:-2,position:"relative",opacity:locked?0.72:1}}>
               <Logo abbr={rk} size={40}/>
               <div style={{fontSize:10,fontWeight:700,color:isSel?C.acc:C.t2,marginTop:5,textAlign:"center",lineHeight:1.2}}>{sn(rk)}</div>
               {isSel&&<div style={{fontSize:9,color:C.acc,fontWeight:800}}>✓ PICKED</div>}
@@ -653,7 +684,7 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
         </div>
         <div style={{display:"flex",alignItems:"center",gap:5}}>
           <span style={{fontSize:11,color:C.t3,marginRight:2}}>Games:</span>
-          {[4,5,6,7].map(g=><button key={g} onClick={()=>setPred(s.id,"g",g)} style={{width:30,height:30,border:`1px solid ${pred.g===g?C.acc:C.bd}`,borderRadius:7,background:pred.g===g?C.aD:"transparent",color:pred.g===g?C.acc:C.t3,fontWeight:700,cursor:"pointer",fontSize:12}}>{g}</button>)}
+          {[4,5,6,7].map(g=><button key={g} onClick={locked?undefined:()=>setPred(s.id,"g",g)} style={{width:30,height:30,border:`1px solid ${pred.g===g?C.acc:C.bd}`,borderRadius:7,background:pred.g===g?C.aD:"transparent",color:pred.g===g?C.acc:C.t3,fontWeight:700,cursor:locked?"default":"pointer",fontSize:12,opacity:locked?0.72:1}}>{g}</button>)}
         </div>
         {cfg.rPo&&real?.w&&<div style={{marginTop:8,background:C.bg4,borderRadius:7,padding:"6px 10px",display:"flex",justifyContent:"space-between"}}>
           <span style={{fontSize:11,color:C.ok,fontWeight:700}}>✓ {sn(real.w)} in {real.g}</span>
@@ -788,9 +819,24 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
 function Playin({me,res,cfg,onSave,bettingOpen,piDeadline,roundBettingOpen}){
   const [draft,setDraft]=useState({...me.pi});
   const [saved,setSaved]=useState(false);
+  const [piStartMap,setPiStartMap]=useState({});
   const piBettingOpen=bettingOpen&&(roundBettingOpen?roundBettingOpen('pi'):true);
+
+  // Fetch schedule once on mount to know when each game tips off
+  useEffect(()=>{fetchPlayoffGames().then(evts=>setPiStartMap(buildSeriesStartMap(evts)));},[]);
+
+  // A play-in game is locked once its specific game has started (or global betting is closed)
+  const isGameLocked=(m)=>{
+    if(!piBettingOpen)return true;
+    if(!m.teams[0]||!m.teams[1])return false;
+    const start=piStartMap[[...m.teams].sort().join('|')];
+    return start?new Date()>=new Date(start):false;
+  };
+
   const doSave=()=>{onSave(me.id,draft);setSaved(true);setTimeout(()=>setSaved(false),2500);};
   const east=PLAYIN.filter(m=>m.conf==="East"), west=PLAYIN.filter(m=>m.conf==="West");
+  // Are ALL games with known teams locked? Then show global closed message instead of Save button
+  const allLocked=PLAYIN.filter(m=>m.teams[0]&&m.teams[1]).every(m=>isGameLocked(m));
   return(
     <div>
       <div style={{display:"inline-flex",alignItems:"center",gap:6,background:"rgba(249,115,22,.1)",border:"1px solid rgba(249,115,22,.3)",borderRadius:7,padding:"3px 10px",fontSize:10,fontWeight:800,color:C.acc,textTransform:"uppercase",letterSpacing:"1px",marginBottom:10}}>⚡ Play-In · April 14–17</div>
@@ -813,17 +859,21 @@ function Playin({me,res,cfg,onSave,bettingOpen,piDeadline,roundBettingOpen}){
             const correct=cfg.rPi&&real&&picked&&picked===real;
             const wrong=cfg.rPi&&real&&picked&&picked!==real;
             const hasTeams=m.teams[0]&&m.teams[1];
+            const locked=isGameLocked(m);
             return(
-              <div key={m.id} style={{background:correct?C.okB:wrong?C.erB:C.bg2,border:`1px solid ${correct?C.ok:wrong?C.er:C.bdL}`,borderRadius:12,marginBottom:8,overflow:"hidden"}}>
+              <div key={m.id} style={{background:correct?C.okB:wrong?C.erB:C.bg2,border:`1px solid ${correct?C.ok:wrong?C.er:locked&&!real?"rgba(248,113,113,.3)":C.bdL}`,borderRadius:12,marginBottom:8,overflow:"hidden"}}>
                 <div style={{background:C.bg3,padding:"8px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
                   <div><div style={{fontWeight:800,fontSize:13}}>{m.label}</div><div style={{fontSize:11,color:C.t3}}>{m.desc}</div></div>
-                  {cfg.rPi&&real&&<span style={{color:C.ok,fontWeight:700,fontSize:11}}>✓ {T[real]?.n||real} advances</span>}
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    {locked&&!real&&<span style={{color:C.er,fontWeight:700,fontSize:11}}>🔒 Game started</span>}
+                    {cfg.rPi&&real&&<span style={{color:C.ok,fontWeight:700,fontSize:11}}>✓ {T[real]?.n||real} advances</span>}
+                  </div>
                 </div>
                 {hasTeams?(
-                  <div style={{display:"flex"}}>
+                  <div style={{display:"flex",opacity:locked?0.72:1}}>
                     {m.teams.map((tk,idx)=>{
                       const isSel=picked===tk;
-                      return <button key={tk} onClick={()=>setDraft(p=>({...p,[m.id]:{w:tk}}))} style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"14px 10px",border:"none",cursor:"pointer",background:isSel?`linear-gradient(${idx===0?"to right":"to left"},rgba(249,115,22,.2),transparent)`:"transparent",borderRight:idx===0?`1px solid ${C.bd}`:"none",outline:isSel?`2px inset ${C.acc}`:"none"}}>
+                      return <button key={tk} onClick={locked?undefined:()=>setDraft(p=>({...p,[m.id]:{w:tk}}))} style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"14px 10px",border:"none",cursor:locked?"default":"pointer",background:isSel?`linear-gradient(${idx===0?"to right":"to left"},rgba(249,115,22,.2),transparent)`:"transparent",borderRight:idx===0?`1px solid ${C.bd}`:"none",outline:isSel?`2px inset ${C.acc}`:"none"}}>
                         <Logo abbr={tk} size={44}/>
                         <div><div style={{fontWeight:700,fontSize:13,color:isSel?C.acc:C.t1}}>{T[tk]?.n||tk}</div>{isSel&&<div style={{fontSize:10,color:C.acc,fontWeight:800}}>✓ Your pick</div>}</div>
                       </button>;
@@ -838,7 +888,7 @@ function Playin({me,res,cfg,onSave,bettingOpen,piDeadline,roundBettingOpen}){
         </div>
       ))}
       <div style={{textAlign:"center"}}>
-        {piBettingOpen
+        {!allLocked
           ?<button onClick={doSave} style={{...btn.p,padding:"12px 44px",fontSize:14}}>{saved?"✓ Saved!":"Save Play-In Picks"}</button>
           :<div style={{background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.3)",borderRadius:12,padding:"12px 16px",color:C.er,fontWeight:700,fontSize:13}}>🔒 Play-In betting is closed</div>
         }
