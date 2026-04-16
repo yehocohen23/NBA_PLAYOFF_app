@@ -404,11 +404,14 @@ export default function App(){
 
   // ── Results (admin) → Supabase + realtime ─────────────────────────────────
   const updateRes=(updater)=>{
+    let next;
     setRes(prev=>{
-      const next=typeof updater==="function"?updater(prev):updater;
-      sb.from('results').update({data:next}).eq('id',1);
+      next=typeof updater==="function"?updater(prev):updater;
       return next;
     });
+    // Save outside the state updater so React's concurrent mode doesn't swallow the write
+    sb.from('results').upsert({id:1,data:next})
+      .then(({error})=>{if(error) console.error('Results save error:',error);});
   };
   const setPoR=(sid,w,g)=>updateRes(p=>({...p,po:{...p.po,[sid]:{w,g:parseInt(g)||null}}}));
   const setPiR=(mid,w)=>updateRes(p=>({...p,pi:{...p.pi,[mid]:{w}}}));
@@ -417,11 +420,14 @@ export default function App(){
 
   // ── Config (admin) → Supabase + realtime ──────────────────────────────────
   const setCfg=(updater)=>{
+    let next;
     setCfgRaw(prev=>{
-      const next=typeof updater==="function"?updater(prev):updater;
-      sb.from('app_config').update({data:next}).eq('id',1);
+      next=typeof updater==="function"?updater(prev):updater;
       return next;
     });
+    // Save outside the state updater so React's concurrent mode doesn't swallow the write
+    sb.from('app_config').upsert({id:1,data:next})
+      .then(({error})=>{if(error) console.error('Config save error:',error);});
   };
 
   // ── Loading screen ────────────────────────────────────────────────────────
