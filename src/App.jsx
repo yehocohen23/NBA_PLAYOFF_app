@@ -218,9 +218,11 @@ async function fetchSeriesScores(){
     cs.forEach(c=>{if(c.winner)map[key].wins[c.team.abbreviation]=(map[key].wins[c.team.abbreviation]||0)+1;});
   });
   return map;}
-// Build a map of sorted team-pair key → earliest game start time (ISO string)
+// Build a map of sorted team-pair key → { startTime: ISO string, started: bool }
+// started = true when: game is live, game is completed, OR startTime has already passed
 // Used to lock individual series/game picks as soon as the first game tips off
 function buildSeriesStartMap(events){
+  const now=new Date();
   const map={};
   events.filter(ev=>new Date(ev.date)>=PLAYOFF_START).forEach(ev=>{
     const cs=ev.competitions?.[0]?.competitors||[];
@@ -228,7 +230,15 @@ function buildSeriesStartMap(events){
     const a=cs[0].team?.abbreviation, b=cs[1].team?.abbreviation;
     if(!a||!b)return;
     const key=[a,b].sort().join('|');
-    if(!map[key]||new Date(ev.date)<new Date(map[key]))map[key]=ev.date;
+    const date=new Date(ev.date);
+    const completed=!!ev.competitions?.[0]?.status?.type?.completed;
+    const live=!completed&&ev.competitions?.[0]?.status?.type?.id!=="1";
+    const started=completed||live||date<=now;
+    if(!map[key]){map[key]={startTime:ev.date,started};}
+    else{
+      if(date<new Date(map[key].startTime))map[key].startTime=ev.date;
+      if(started)map[key].started=true;
+    }
   });
   return map;
 }
@@ -630,10 +640,13 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
   // Returns true if this series' first game has already started (or global betting is closed)
   const isSeriesLocked=(s)=>{
     if(!activeBettingOpen)return true;
+    // Hard fallback: if admin already entered a result, the series is definitely over
+    if(res.po?.[s.id]?.w)return true;
     const ra=resolveTeam(s.t1,res), rb=resolveTeam(s.t2,res);
     if(!ra||!rb||!T[ra]||!T[rb])return false;
-    const start=seriesStartMap[[ra,rb].sort().join('|')];
-    return start?new Date()>=new Date(start):false;
+    const info=seriesStartMap[[ra,rb].sort().join('|')];
+    if(!info)return false;
+    return info.started||new Date()>=new Date(info.startTime);
   };
 
   // Split series by conference for current round
@@ -829,8 +842,11 @@ function Playin({me,res,cfg,onSave,bettingOpen,piDeadline,roundBettingOpen}){
   const isGameLocked=(m)=>{
     if(!piBettingOpen)return true;
     if(!m.teams[0]||!m.teams[1])return false;
-    const start=piStartMap[[...m.teams].sort().join('|')];
-    return start?new Date()>=new Date(start):false;
+    // Hard fallback: admin already entered a result → game is definitely over
+    if(res.pi?.[m.id]?.w)return true;
+    const info=piStartMap[[...m.teams].sort().join('|')];
+    if(!info)return false;
+    return info.started||new Date()>=new Date(info.startTime);
   };
 
   const doSave=()=>{onSave(me.id,draft);setSaved(true);setTimeout(()=>setSaved(false),2500);};
@@ -1188,6 +1204,13 @@ function Board({scores,myId,cfg}){
   const podium=scores.length>=2?[scores[1],scores[0],scores[2]].filter(Boolean):[];
   const pConfig=[{rank:2,h:110,sz:46},{rank:1,h:158,sz:62},{rank:3,h:84,sz:38}];
   const maxPts=scores[0]?.total||1;
+  // Mobile layout: switch to two-line rows when screen is narrow
+  const [isMobile,setIsMobile]=useState(typeof window!=="undefined"&&window.innerWidth<600);
+  useEffect(()=>{
+    const fn=()=>setIsMobile(window.innerWidth<600);
+    window.addEventListener("resize",fn);
+    return()=>window.removeEventListener("resize",fn);
+  },[]);
   return(
     <div>
       {/* ── Page title ── */}
@@ -1253,15 +1276,17 @@ function Board({scores,myId,cfg}){
       {/* ── FULL LEADERBOARD TABLE ── */}
       {rev&&(
         <div>
-          {/* Column headers */}
-          <div style={{display:"grid",gridTemplateColumns:"36px 38px 1fr 34px 34px 34px 34px 34px 34px 44px",alignItems:"center",padding:"6px 14px",marginBottom:5,fontSize:9,color:C.t3,fontWeight:800,textTransform:"uppercase",letterSpacing:"1px"}}>
-            <div>#</div><div/>
-            <div>Player</div>
-            <div style={{textAlign:"center"}}>⚡PI</div>
-            {ROUNDS.map(r=><div key={r.k} style={{textAlign:"center"}}>{r.s}</div>)}
-            <div style={{textAlign:"center"}}>🏆</div>
-            <div style={{textAlign:"right",color:C.acc}}>Total</div>
-          </div>
+          {/* Column headers — hidden on mobile (labels shown inline instead) */}
+          {!isMobile&&(
+            <div style={{display:"grid",gridTemplateColumns:"36px 38px 1fr 34px 34px 34px 34px 34px 34px 44px",alignItems:"center",padding:"6px 14px",marginBottom:5,fontSize:9,color:C.t3,fontWeight:800,textTransform:"uppercase",letterSpacing:"1px"}}>
+              <div>#</div><div/>
+              <div>Player</div>
+              <div style={{textAlign:"center"}}>⚡PI</div>
+              {ROUNDS.map(r=><div key={r.k} style={{textAlign:"center"}}>{r.s}</div>)}
+              <div style={{textAlign:"center"}}>🏆</div>
+              <div style={{textAlign:"right",color:C.acc}}>Total</div>
+            </div>
+          )}
           <div style={{display:"flex",flexDirection:"column",gap:5}}>
             {scores.map((s,i)=>{
               const isMe=s.id===myId,isTop=i<3;
@@ -1283,20 +1308,46 @@ function Board({scores,myId,cfg}){
                   <div style={{height:2,background:C.bg3,marginBottom:0,borderRadius:0}}>
                     <div style={{height:"100%",width:`${pct*100}%`,background:`linear-gradient(90deg,${col},${col}88)`,borderRadius:1,transition:"width .6s"}}/>
                   </div>
-                  <div style={{display:"grid",gridTemplateColumns:"36px 38px 1fr 34px 34px 34px 34px 34px 34px 44px",alignItems:"center",padding:"11px 0"}}>
-                    <div style={{fontSize:isTop?15:12,fontWeight:900,textAlign:"center",color:isTop?col:C.t3}}>{isTop?MEDAL_E[i]:`#${i+1}`}</div>
-                    <Avatar user={s} size={32} idx={i}/>
-                    <div style={{minWidth:0,paddingRight:4}}>
-                      <div style={{fontWeight:800,fontSize:13,color:isMe?C.acc:isTop?col:C.t1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.name}{isMe?" 👤":""}{s.isAI?" 🤖":""}</div>
+                  {isMobile?(
+                    /* ── Mobile: two-line layout ── */
+                    <div style={{padding:"10px 0"}}>
+                      {/* Line 1: rank · avatar · full name · total */}
+                      <div style={{display:"flex",alignItems:"center",gap:9,marginBottom:6}}>
+                        <div style={{fontSize:isTop?15:12,fontWeight:900,textAlign:"center",color:isTop?col:C.t3,minWidth:26}}>{isTop?MEDAL_E[i]:`#${i+1}`}</div>
+                        <Avatar user={s} size={30} idx={i}/>
+                        <div style={{flex:1,fontWeight:800,fontSize:14,color:isMe?C.acc:isTop?col:C.t1,wordBreak:"break-word"}}>{s.name}{isMe?" 👤":""}{s.isAI?" 🤖":""}</div>
+                        <div style={{fontSize:isTop?20:16,fontWeight:900,color:col,lineHeight:1,whiteSpace:"nowrap"}}>{s.total||"—"}<span style={{fontSize:9,color:C.t3,fontWeight:600,marginLeft:2}}>pts</span></div>
+                      </div>
+                      {/* Line 2: per-round score chips */}
+                      <div style={{display:"flex",gap:5,flexWrap:"wrap",paddingLeft:35}}>
+                        {[["⚡",pi,"pi"],["R1",r1,"r"],["R2",r2,"r"],["R3",r3,"r"],["F",rf,"r"],["🏆",ch,"champ"]].map(([label,val,type])=>{
+                          const c=type==="champ"?(val>0?C.gold:C.t3):type==="pi"?(val>0?"#60a5fa":C.t3):(val>0?C.wn:C.t3);
+                          return(
+                            <div key={label} style={{display:"flex",alignItems:"center",gap:2,background:C.bg3,borderRadius:5,padding:"2px 6px"}}>
+                              <span style={{fontSize:9,color:C.t3,fontWeight:700}}>{label}</span>
+                              <span style={{fontSize:11,fontWeight:800,color:c}}>{val||"—"}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                    <ScoreCell v={pi} type="pi"/>
-                    <ScoreCell v={r1} type="r"/>
-                    <ScoreCell v={r2} type="r"/>
-                    <ScoreCell v={r3} type="r"/>
-                    <ScoreCell v={rf} type="r"/>
-                    <ScoreCell v={ch} type="champ"/>
-                    <div style={{textAlign:"right",fontSize:isTop?22:17,fontWeight:900,color:col,lineHeight:1}}>{s.total||"—"}</div>
-                  </div>
+                  ):(
+                    /* ── Desktop: single-row grid ── */
+                    <div style={{display:"grid",gridTemplateColumns:"36px 38px 1fr 34px 34px 34px 34px 34px 34px 44px",alignItems:"center",padding:"11px 0"}}>
+                      <div style={{fontSize:isTop?15:12,fontWeight:900,textAlign:"center",color:isTop?col:C.t3}}>{isTop?MEDAL_E[i]:`#${i+1}`}</div>
+                      <Avatar user={s} size={32} idx={i}/>
+                      <div style={{minWidth:0,paddingRight:4}}>
+                        <div style={{fontWeight:800,fontSize:13,color:isMe?C.acc:isTop?col:C.t1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.name}{isMe?" 👤":""}{s.isAI?" 🤖":""}</div>
+                      </div>
+                      <ScoreCell v={pi} type="pi"/>
+                      <ScoreCell v={r1} type="r"/>
+                      <ScoreCell v={r2} type="r"/>
+                      <ScoreCell v={r3} type="r"/>
+                      <ScoreCell v={rf} type="r"/>
+                      <ScoreCell v={ch} type="champ"/>
+                      <div style={{textAlign:"right",fontSize:isTop?22:17,fontWeight:900,color:col,lineHeight:1}}>{s.total||"—"}</div>
+                    </div>
+                  )}
                 </div>
               );
             })}
