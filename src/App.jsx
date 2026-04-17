@@ -637,7 +637,22 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
   // Fetch schedule once on mount to build series start-time map
   useEffect(()=>{fetchPlayoffGames().then(evts=>setSeriesStartMap(buildSeriesStartMap(evts)));},[]);
 
-  // Returns true if this series' first game has already started (or global betting is closed)
+  // Keep the local draft in sync with realtime updates to me.po (another tab,
+  // admin action, etc.) without clobbering the user's in-progress edits.
+  // We only back-fill keys that are NOT already in the local draft.
+  useEffect(()=>{
+    setDraft(prev=>{
+      const next={...prev};
+      for(const [k,v] of Object.entries(me.po||{})){
+        if(!(k in next)) next[k]=v;
+      }
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[me.po]);
+
+  // Returns true if this series' first game has already started (or global betting is closed).
+  // The per-game deadline is derived from the ESPN schedule (info.startTime).
   const isSeriesLocked=(s)=>{
     if(!activeBettingOpen)return true;
     // Hard fallback: if admin already entered a result, the series is definitely over
@@ -646,6 +661,7 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
     if(!ra||!rb||!T[ra]||!T[rb])return false;
     const info=seriesStartMap[[ra,rb].sort().join('|')];
     if(!info)return false;
+    // Compare the live clock (new Date()) against the specific game's start time
     return info.started||new Date()>=new Date(info.startTime);
   };
 
@@ -657,16 +673,49 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
   const roundPts=ROUNDS.find(r=>r.k===activeR).pts;
 
   const setPred=(sid,field,val)=>{setSaveErr("");setDraft(p=>({...p,[sid]:{...(p[sid]||{}),[field]:field==="g"?parseInt(val):val}}));};
-  const doSave=()=>{
-    // Validate: every unlocked series with a winner must also have a game count
+
+  // Save flow: re-evaluate every series' lock status against the live clock
+  // at the moment the user clicks Save. For any series whose first game has
+  // already tipped off, we refuse to overwrite the existing pick and surface
+  // a "Game already started" notification. For series that are still open,
+  // the draft value is merged into the payload. This is the core of the
+  // per-game (series) deadline behavior.
+  const doSave=async()=>{
     const allOpenSeries=SERIES.filter(s=>ROUND_KEYS.indexOf(s.r)<=openIdx);
-    const incomplete=allOpenSeries.filter(s=>!isSeriesLocked(s)&&draft[s.id]?.w&&!draft[s.id]?.g);
+    const currentPo=me.po||{};
+    // Start from the most recent server state so we never drop other picks
+    const payload={...currentPo};
+    const rejected=[];
+    for(const s of allOpenSeries){
+      if(isSeriesLocked(s)){
+        const d=draft[s.id], o=currentPo[s.id];
+        // Flag if the user tried to change this pick after the game started
+        if(d&&d.w&&(d.w!==o?.w||d.g!==o?.g)) rejected.push(s);
+        // Keep server-side value for locked series — do NOT overwrite
+      } else if(draft[s.id]){
+        payload[s.id]=draft[s.id];
+      }
+    }
+    // Validate: every unlocked series with a winner must also have a game count
+    const incomplete=allOpenSeries.filter(s=>!isSeriesLocked(s)&&payload[s.id]?.w&&!payload[s.id]?.g);
     if(incomplete.length>0){
-      setSaveErr(`⚠️ נא לבחור גם כמה משחקים ב-${incomplete.length} סדרה${incomplete.length>1?"ות":""} (${incomplete.map(s=>sn(resolveTeam(s.t1,res)||s.t1)+" vs "+sn(resolveTeam(s.t2,res)||s.t2)).join(", ")})`);
+      setSaveErr(`⚠️ Please also pick the number of games for ${incomplete.length} series (${incomplete.map(s=>sn(resolveTeam(s.t1,res)||s.t1)+" vs "+sn(resolveTeam(s.t2,res)||s.t2)).join(", ")})`);
       return;
     }
-    setSaveErr("");
-    onSave(me.id,draft,champ||null,mvp||null);
+    if(rejected.length>0){
+      setSaveErr(`🔒 Game already started — the following picks were not updated: ${rejected.map(s=>sn(resolveTeam(s.t1,res)||s.t1)+" vs "+sn(resolveTeam(s.t2,res)||s.t2)).join(", ")}`);
+    } else {
+      setSaveErr("");
+    }
+    // Mirror the payload back into the local draft so the UI stays truthful
+    setDraft(payload);
+    try{
+      await onSave(me.id,payload,champ||null,mvp||null);
+    }catch(err){
+      console.error('❌ Picks save error:',err);
+      setSaveErr(prev=>prev||`Save failed: ${err?.message||err}`);
+      return;
+    }
     setSaved(true);
     setTimeout(()=>setSaved(false),2500);
   };
@@ -687,7 +736,7 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
           {[{k:s.t1},{k:s.t2}].map(({k},idx)=>{
             const rk=resolveTeam(k,res)||k; // resolved for display (logo + name)
             const isSel=pred.w===k;
-            return <button key={k} onClick={locked?undefined:()=>setPred(s.id,"w",k)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"10px 6px",border:"none",cursor:locked?"default":"pointer",background:isSel?`linear-gradient(${idx===0?"135deg":"225deg"},rgba(249,115,22,.2),transparent)`:"transparent",outline:isSel?`2px solid ${C.acc}`:"none",outlineOffset:-2,position:"relative",opacity:locked?0.72:1}}>
+            return <button key={k} disabled={locked} onClick={locked?undefined:()=>setPred(s.id,"w",k)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"10px 6px",border:"none",cursor:locked?"not-allowed":"pointer",background:isSel?`linear-gradient(${idx===0?"135deg":"225deg"},rgba(249,115,22,.2),transparent)`:"transparent",outline:isSel?`2px solid ${C.acc}`:"none",outlineOffset:-2,position:"relative",opacity:locked?0.72:1}}>
               <Logo abbr={rk} size={40}/>
               <div style={{fontSize:10,fontWeight:700,color:isSel?C.acc:C.t2,marginTop:5,textAlign:"center",lineHeight:1.2}}>{sn(rk)}</div>
               {isSel&&<div style={{fontSize:9,color:C.acc,fontWeight:800}}>✓ PICKED</div>}
@@ -697,7 +746,7 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
         </div>
         <div style={{display:"flex",alignItems:"center",gap:5}}>
           <span style={{fontSize:11,color:C.t3,marginRight:2}}>Games:</span>
-          {[4,5,6,7].map(g=><button key={g} onClick={locked?undefined:()=>setPred(s.id,"g",g)} style={{width:30,height:30,border:`1px solid ${pred.g===g?C.acc:C.bd}`,borderRadius:7,background:pred.g===g?C.aD:"transparent",color:pred.g===g?C.acc:C.t3,fontWeight:700,cursor:locked?"default":"pointer",fontSize:12,opacity:locked?0.72:1}}>{g}</button>)}
+          {[4,5,6,7].map(g=><button key={g} disabled={locked} onClick={locked?undefined:()=>setPred(s.id,"g",g)} style={{width:30,height:30,border:`1px solid ${pred.g===g?C.acc:C.bd}`,borderRadius:7,background:pred.g===g?C.aD:"transparent",color:pred.g===g?C.acc:C.t3,fontWeight:700,cursor:locked?"not-allowed":"pointer",fontSize:12,opacity:locked?0.72:1}}>{g}</button>)}
         </div>
         {cfg.rPo&&real?.w&&<div style={{marginTop:8,background:C.bg4,borderRadius:7,padding:"6px 10px",display:"flex",justifyContent:"space-between"}}>
           <span style={{fontSize:11,color:C.ok,fontWeight:700}}>✓ {sn(real.w)} in {real.g}</span>
@@ -818,7 +867,7 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
         {activeBettingOpen
           ?<>
             <button onClick={doSave} style={{...btn.p,padding:"13px 44px",fontSize:15}}>{saved?"✓ Picks Saved!":"Save My Predictions"}</button>
-            {saveErr&&<div style={{background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.35)",borderRadius:10,padding:"10px 16px",marginTop:10,color:C.er,fontWeight:700,fontSize:13,textAlign:"right",direction:"rtl"}}>{saveErr}</div>}
+            {saveErr&&<div style={{background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.35)",borderRadius:10,padding:"10px 16px",marginTop:10,color:C.er,fontWeight:700,fontSize:13}}>{saveErr}</div>}
             {!saveErr&&<p style={{color:C.t3,fontSize:11,marginTop:8}}>Predictions lock at the deadline set by admin.</p>}
           </>
           :<div style={{background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.3)",borderRadius:12,padding:"14px 18px",color:C.er,fontWeight:700,fontSize:14}}>🔒 Betting is closed — predictions are locked</div>
@@ -830,13 +879,28 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
 
 // ─── PLAY-IN ─────────────────────────────────────────────────────────────────
 function Playin({me,res,cfg,onSave,bettingOpen,piDeadline,roundBettingOpen}){
-  const [draft,setDraft]=useState({...me.pi});
+  const [draft,setDraft]=useState({...(me.pi||{})});
   const [saved,setSaved]=useState(false);
+  const [saveErr,setSaveErr]=useState("");
   const [piStartMap,setPiStartMap]=useState({});
   const piBettingOpen=bettingOpen&&(roundBettingOpen?roundBettingOpen('pi'):true);
 
   // Fetch schedule once on mount to know when each game tips off
   useEffect(()=>{fetchPlayoffGames().then(evts=>setPiStartMap(buildSeriesStartMap(evts)));},[]);
+
+  // Keep the local draft in sync with realtime updates to me.pi (another tab,
+  // admin, etc.) without clobbering the user's in-progress edits. We only
+  // back-fill keys that are NOT already in the local draft.
+  useEffect(()=>{
+    setDraft(prev=>{
+      const next={...prev};
+      for(const [k,v] of Object.entries(me.pi||{})){
+        if(!(k in next)) next[k]=v;
+      }
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[me.pi]);
 
   // A play-in game is locked once its specific game has started (or global betting is closed)
   const isGameLocked=(m)=>{
@@ -846,10 +910,46 @@ function Playin({me,res,cfg,onSave,bettingOpen,piDeadline,roundBettingOpen}){
     if(res.pi?.[m.id]?.w)return true;
     const info=piStartMap[[...m.teams].sort().join('|')];
     if(!info)return false;
+    // Per-game deadline: once the specific start time is reached, lock this game.
     return info.started||new Date()>=new Date(info.startTime);
   };
 
-  const doSave=()=>{onSave(me.id,draft);setSaved(true);setTimeout(()=>setSaved(false),2500);};
+  // Save flow: re-check each game's lock status at the moment of save against
+  // the live clock (new Date()). For any game that has already started, we
+  // refuse to overwrite the existing pick and surface a notification. For
+  // games that are still open, the draft value is written to Supabase.
+  const doSave=async()=>{
+    setSaveErr("");
+    const currentPi=me.pi||{};
+    // Start from the most recent server state so we never drop another game's pick
+    const payload={...currentPi};
+    const rejected=[];
+    for(const m of PLAYIN){
+      if(!m.teams[0]||!m.teams[1]) continue;
+      if(isGameLocked(m)){
+        const d=draft[m.id], o=currentPi[m.id];
+        // If the user changed their pick after the game started, flag it
+        if(d&&d.w&&d.w!==o?.w) rejected.push(m);
+        // Keep the server-side value for locked games — do NOT overwrite
+      } else if(draft[m.id]){
+        payload[m.id]=draft[m.id];
+      }
+    }
+    if(rejected.length>0){
+      setSaveErr(`🔒 Game already started — pick not updated: ${rejected.map(m=>m.label).join(", ")}`);
+    }
+    // Mirror the payload back into the local draft so the UI is truthful
+    setDraft(payload);
+    try{
+      await onSave(me.id,payload);
+    }catch(err){
+      console.error('❌ Play-In save error:',err);
+      setSaveErr(prev=>prev||`Save failed: ${err?.message||err}`);
+      return;
+    }
+    setSaved(true);
+    setTimeout(()=>setSaved(false),2500);
+  };
   const east=PLAYIN.filter(m=>m.conf==="East"), west=PLAYIN.filter(m=>m.conf==="West");
   // Are ALL games with known teams locked? Then show global closed message instead of Save button
   const allLocked=PLAYIN.filter(m=>m.teams[0]&&m.teams[1]).every(m=>isGameLocked(m));
@@ -889,7 +989,7 @@ function Playin({me,res,cfg,onSave,bettingOpen,piDeadline,roundBettingOpen}){
                   <div style={{display:"flex",opacity:locked?0.72:1}}>
                     {m.teams.map((tk,idx)=>{
                       const isSel=picked===tk;
-                      return <button key={tk} onClick={locked?undefined:()=>setDraft(p=>({...p,[m.id]:{w:tk}}))} style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"14px 10px",border:"none",cursor:locked?"default":"pointer",background:isSel?`linear-gradient(${idx===0?"to right":"to left"},rgba(249,115,22,.2),transparent)`:"transparent",borderRight:idx===0?`1px solid ${C.bd}`:"none",outline:isSel?`2px inset ${C.acc}`:"none"}}>
+                      return <button key={tk} disabled={locked} onClick={locked?undefined:()=>setDraft(p=>({...p,[m.id]:{w:tk}}))} style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"14px 10px",border:"none",cursor:locked?"not-allowed":"pointer",background:isSel?`linear-gradient(${idx===0?"to right":"to left"},rgba(249,115,22,.2),transparent)`:"transparent",borderRight:idx===0?`1px solid ${C.bd}`:"none",outline:isSel?`2px inset ${C.acc}`:"none"}}>
                         <Logo abbr={tk} size={44}/>
                         <div><div style={{fontWeight:700,fontSize:13,color:isSel?C.acc:C.t1}}>{T[tk]?.n||tk}</div>{isSel&&<div style={{fontSize:10,color:C.acc,fontWeight:800}}>✓ Your pick</div>}</div>
                       </button>;
@@ -905,7 +1005,10 @@ function Playin({me,res,cfg,onSave,bettingOpen,piDeadline,roundBettingOpen}){
       ))}
       <div style={{textAlign:"center"}}>
         {!allLocked
-          ?<button onClick={doSave} style={{...btn.p,padding:"12px 44px",fontSize:14}}>{saved?"✓ Saved!":"Save Play-In Picks"}</button>
+          ?<>
+            <button onClick={doSave} style={{...btn.p,padding:"12px 44px",fontSize:14}}>{saved?"✓ Saved!":"Save Play-In Picks"}</button>
+            {saveErr&&<div style={{background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.35)",borderRadius:10,padding:"10px 16px",marginTop:10,color:C.er,fontWeight:700,fontSize:13}}>{saveErr}</div>}
+          </>
           :<div style={{background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.3)",borderRadius:12,padding:"12px 16px",color:C.er,fontWeight:700,fontSize:13}}>🔒 Play-In betting is closed</div>
         }
       </div>
