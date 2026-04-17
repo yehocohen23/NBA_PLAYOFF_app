@@ -99,6 +99,32 @@ function resolveTeam(abbr,res){
   return null;
 }
 
+// Resolve a Play-In matchup to its real teams.
+// For the "Loser Games" (pi_elo, pi_wlo), the real teams depend on the prior
+// #7-vs-#8 and #9-vs-#10 matchups:
+//     Loser Game = loser of (#7 vs #8)  vs  winner of (#9 vs #10)  → #8 seed
+// Those results live in res.pi.<gid>.w. Until both prior games have a winner,
+// we return the original matchup (teams = ["",""]) so the UI still shows the
+// "Results from previous games needed first" placeholder.
+function resolvePlayinMatch(m,res){
+  if(m.id!=='pi_elo'&&m.id!=='pi_wlo') return m;
+  const isEast=m.id==='pi_elo';
+  const g1id=isEast?'pi_e78':'pi_w78';    // #7 vs #8 (loser goes to loser game)
+  const g2id=isEast?'pi_e910':'pi_w910';  // #9 vs #10 (winner goes to loser game)
+  const g1=PLAYIN.find(x=>x.id===g1id);
+  const g2=PLAYIN.find(x=>x.id===g2id);
+  const w1=res?.pi?.[g1id]?.w;
+  const w2=res?.pi?.[g2id]?.w;
+  if(!w1||!w2||!g1||!g2) return m;
+  const loserOfG1=g1.teams.find(t=>t&&t!==w1);
+  if(!loserOfG1) return m;
+  return {
+    ...m,
+    teams:[loserOfG1,w2],
+    desc:`${T[loserOfG1]?.n||loserOfG1} vs ${T[w2]?.n||w2} → #8 seed`,
+  };
+}
+
 // ─── AI PICKS ────────────────────────────────────────────────────────────────
 const AI={
   id:"__ai__",name:"Claude AI 🤖",isAI:true,photo:null,
@@ -634,8 +660,17 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
   const activeDeadline=getRoundDeadline?getRoundDeadline(activeR):null;
   const activeBettingOpen=bettingOpen&&(roundBettingOpen?roundBettingOpen(activeR):true);
 
-  // Fetch schedule once on mount to build series start-time map
-  useEffect(()=>{fetchPlayoffGames().then(evts=>setSeriesStartMap(buildSeriesStartMap(evts)));},[]);
+  // Fetch the ESPN schedule on mount AND whenever res.pi changes. Round 1
+  // matchups involving E7/E8/W7/W8 become fully-known only after Play-In
+  // resolves, so the start-time map must be rebuilt so their tipoffs are
+  // picked up for per-game locking.
+  useEffect(()=>{
+    let cancelled=false;
+    fetchPlayoffGames().then(evts=>{
+      if(!cancelled) setSeriesStartMap(buildSeriesStartMap(evts));
+    });
+    return()=>{cancelled=true;};
+  },[res?.pi]);
 
   // Keep the local draft in sync with realtime updates to me.po (another tab,
   // admin action, etc.) without clobbering the user's in-progress edits.
@@ -885,8 +920,21 @@ function Playin({me,res,cfg,onSave,bettingOpen,piDeadline,roundBettingOpen}){
   const [piStartMap,setPiStartMap]=useState({});
   const piBettingOpen=bettingOpen&&(roundBettingOpen?roundBettingOpen('pi'):true);
 
-  // Fetch schedule once on mount to know when each game tips off
-  useEffect(()=>{fetchPlayoffGames().then(evts=>setPiStartMap(buildSeriesStartMap(evts)));},[]);
+  // Resolve every Play-In matchup (turns the hardcoded ["",""] loser-game
+  // teams into real team abbrs once the prior G1/G2 results are in).
+  const resolvedPlayin=useMemo(()=>PLAYIN.map(m=>resolvePlayinMatch(m,res)),[res]);
+
+  // Fetch the ESPN schedule on mount AND whenever res.pi changes. This is
+  // important for the loser games: ESPN only lists those events after the
+  // prior games finish, and the schedule map must be rebuilt so the newly
+  // announced games get their start times picked up for per-game locking.
+  useEffect(()=>{
+    let cancelled=false;
+    fetchPlayoffGames().then(evts=>{
+      if(!cancelled) setPiStartMap(buildSeriesStartMap(evts));
+    });
+    return()=>{cancelled=true;};
+  },[res?.pi]);
 
   // Keep the local draft in sync with realtime updates to me.pi (another tab,
   // admin, etc.) without clobbering the user's in-progress edits. We only
@@ -924,7 +972,8 @@ function Playin({me,res,cfg,onSave,bettingOpen,piDeadline,roundBettingOpen}){
     // Start from the most recent server state so we never drop another game's pick
     const payload={...currentPi};
     const rejected=[];
-    for(const m of PLAYIN){
+    // Use resolvedPlayin so loser-game teams are real (not the hardcoded "")
+    for(const m of resolvedPlayin){
       if(!m.teams[0]||!m.teams[1]) continue;
       if(isGameLocked(m)){
         const d=draft[m.id], o=currentPi[m.id];
@@ -950,9 +999,11 @@ function Playin({me,res,cfg,onSave,bettingOpen,piDeadline,roundBettingOpen}){
     setSaved(true);
     setTimeout(()=>setSaved(false),2500);
   };
-  const east=PLAYIN.filter(m=>m.conf==="East"), west=PLAYIN.filter(m=>m.conf==="West");
+  // Split the RESOLVED matchups (so the loser games display their real teams
+  // and logos once G1/G2 are decided).
+  const east=resolvedPlayin.filter(m=>m.conf==="East"), west=resolvedPlayin.filter(m=>m.conf==="West");
   // Are ALL games with known teams locked? Then show global closed message instead of Save button
-  const allLocked=PLAYIN.filter(m=>m.teams[0]&&m.teams[1]).every(m=>isGameLocked(m));
+  const allLocked=resolvedPlayin.filter(m=>m.teams[0]&&m.teams[1]).every(m=>isGameLocked(m));
   return(
     <div>
       <div style={{display:"inline-flex",alignItems:"center",gap:6,background:"rgba(249,115,22,.1)",border:"1px solid rgba(249,115,22,.3)",borderRadius:7,padding:"3px 10px",fontSize:10,fontWeight:800,color:C.acc,textTransform:"uppercase",letterSpacing:"1px",marginBottom:10}}>⚡ Play-In · April 14–17</div>
