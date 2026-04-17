@@ -99,6 +99,32 @@ function resolveTeam(abbr,res){
   return null;
 }
 
+// Resolve a Play-In matchup to its real teams.
+// For the "Loser Games" (pi_elo, pi_wlo), the real teams depend on the prior
+// #7-vs-#8 and #9-vs-#10 matchups:
+//     Loser Game = loser of (#7 vs #8)  vs  winner of (#9 vs #10)  → #8 seed
+// Those results live in res.pi.<gid>.w. Until both prior games have a winner,
+// we return the original matchup (teams = ["",""]) so the UI still shows the
+// "Results from previous games needed first" placeholder.
+function resolvePlayinMatch(m,res){
+  if(m.id!=='pi_elo'&&m.id!=='pi_wlo') return m;
+  const isEast=m.id==='pi_elo';
+  const g1id=isEast?'pi_e78':'pi_w78';    // #7 vs #8 (loser goes to loser game)
+  const g2id=isEast?'pi_e910':'pi_w910';  // #9 vs #10 (winner goes to loser game)
+  const g1=PLAYIN.find(x=>x.id===g1id);
+  const g2=PLAYIN.find(x=>x.id===g2id);
+  const w1=res?.pi?.[g1id]?.w;
+  const w2=res?.pi?.[g2id]?.w;
+  if(!w1||!w2||!g1||!g2) return m;
+  const loserOfG1=g1.teams.find(t=>t&&t!==w1);
+  if(!loserOfG1) return m;
+  return {
+    ...m,
+    teams:[loserOfG1,w2],
+    desc:`${T[loserOfG1]?.n||loserOfG1} vs ${T[w2]?.n||w2} → #8 seed`,
+  };
+}
+
 // ─── AI PICKS ────────────────────────────────────────────────────────────────
 const AI={
   id:"__ai__",name:"Claude AI 🤖",isAI:true,photo:null,
@@ -157,42 +183,112 @@ const sv=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch{}};
 
 // ─── COLORS ─────────────────────────────────────────────────────────────────
 const C={
-  bg0:"#04080f",bg1:"#090f1c",bg2:"#0f1829",bg3:"#162034",bg4:"#1c2840",
-  acc:"#f97316",aD:"rgba(249,115,22,.12)",
-  bd:"#1c2a3e",bdL:"#243347",
-  t1:"#eef2f7",t2:"#8fa3b8",t3:"#3d5166",
+  bg0:"#03060e",bg1:"#07101f",bg2:"#0c1628",bg3:"#111e33",bg4:"#182540",
+  acc:"#f97316",acc2:"#fb923c",aD:"rgba(249,115,22,.13)",
+  bd:"#1a2840",bdL:"#1f3050",
+  t1:"#f0f4fa",t2:"#90a8c0",t3:"#384f68",
   ok:"#34d399",okB:"rgba(52,211,153,.1)",
   wn:"#fbbf24",wnB:"rgba(251,191,36,.08)",
   er:"#f87171",erB:"rgba(248,113,113,.08)",
   ai:"#38bdf8",
-  gold:"#FFD700",silver:"#C0C0C0",bronze:"#CD7F32",
+  gold:"#FFD700",silver:"#C8D0D8",bronze:"#CD7F32",
+  g1:"linear-gradient(135deg,#f97316,#dc6004)",
+  g2:"linear-gradient(135deg,#34d399,#059669)",
+  gHdr:"linear-gradient(90deg,#07101f 0%,#0c1628 100%)",
 };
 const BG={exact:{c:C.ok,bg:C.okB},correct:{c:C.wn,bg:C.wnB},wrong:{c:C.er,bg:C.erB},pending:{c:C.t3,bg:"transparent"}};
 const PC=["#f97316","#a78bfa","#34d399","#60a5fa","#f472b6","#facc15","#4ade80","#e879f9","#38bdf8","#fb923c","#c084fc","#86efac"];
 const pcol=(u,i)=>u?.isAI?C.ai:PC[i%PC.length];
+const MEDAL_C=[C.gold,C.silver,C.bronze];
+const MEDAL_G=['rgba(255,215,0,.22)','rgba(200,208,216,.18)','rgba(205,127,50,.18)'];
+const MEDAL_E=["🥇","🥈","🥉"];
 
 // ─── ESPN / NBA SCHEDULE API ─────────────────────────────────────────────────
 const ESPN_SB='https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard';
+// Hardcoded playoff cutoff — Play-In starts April 14; any game on/after this is post-season
+const PLAYOFF_START=new Date('2026-04-14T00:00:00');
 async function fetchPlayoffGames(){
   const today=new Date();
-  const s=new Date(today);s.setDate(today.getDate()-7);
+  // Never look back before April 13 (avoids regular season bleed-in)
+  const startMs=Math.max(new Date('2026-04-13').getTime(),today.getTime()-3*86400000);
+  const s=new Date(startMs);
   const e=new Date(today);e.setDate(today.getDate()+21);
   const fmt=d=>`${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
   try{
     const r=await fetch(`${ESPN_SB}?dates=${fmt(s)}-${fmt(e)}&limit=200`);
-    if(r.ok){const j=await r.json();if((j.events||[]).length>3)return j.events;}
+    if(r.ok){const j=await r.json();if((j.events||[]).length>0)return j.events;}
   }catch{}
-  // Fallback: one call per day
-  const all=[];
-  const tasks=[];
-  for(let i=-5;i<=14;i++){
-    const d=new Date(today);d.setDate(today.getDate()+i);
-    const ds=fmt(d);
+  // Fallback: one call per day from April 13 onwards
+  const all=[];const tasks=[];
+  const days=Math.ceil((e-s)/86400000);
+  for(let i=0;i<=days;i++){
+    const d=new Date(s.getTime()+i*86400000);const ds=fmt(d);
     tasks.push(fetch(`${ESPN_SB}?dates=${ds}`).then(r=>r.ok?r.json():{events:[]}).then(j=>j.events||[]).catch(()=>[]));
   }
-  const res=await Promise.all(tasks);
-  res.forEach(arr=>all.push(...arr));
+  const res=await Promise.all(tasks);res.forEach(arr=>all.push(...arr));
   return all;
+}
+// ESPN numeric team IDs (for injuries API)
+const ESPN_IDS={DET:8,BOS:2,NYK:18,CLE:5,TOR:28,ATL:1,OKC:25,SAS:24,DEN:7,LAL:13,HOU:10,MIN:16,ORL:19,PHX:21,LAC:12,GSW:9};
+// Compute current series win totals from ESPN completed games (date-based filter, not season type)
+async function fetchSeriesScores(){
+  const evts=await fetchPlayoffGames();
+  const done=evts.filter(e=>
+    e.competitions?.[0]?.status?.type?.completed&&new Date(e.date)>=PLAYOFF_START);
+  const map={};
+  done.forEach(ev=>{
+    const cs=ev.competitions?.[0]?.competitors||[];if(cs.length<2)return;
+    const key=[cs[0].team?.abbreviation,cs[1].team?.abbreviation].sort().join('|');
+    if(!map[key])map[key]={wins:{},games:0};
+    map[key].games++;
+    cs.forEach(c=>{if(c.winner)map[key].wins[c.team.abbreviation]=(map[key].wins[c.team.abbreviation]||0)+1;});
+  });
+  return map;}
+// Build a map of sorted team-pair key → { startTime: ISO string, started: bool }
+// started = true when: game is live, game is completed, OR startTime has already passed
+// Used to lock individual series/game picks as soon as the first game tips off
+function buildSeriesStartMap(events){
+  const now=new Date();
+  const map={};
+  events.filter(ev=>new Date(ev.date)>=PLAYOFF_START).forEach(ev=>{
+    const cs=ev.competitions?.[0]?.competitors||[];
+    if(cs.length<2)return;
+    const a=cs[0].team?.abbreviation, b=cs[1].team?.abbreviation;
+    if(!a||!b)return;
+    const key=[a,b].sort().join('|');
+    const date=new Date(ev.date);
+    const completed=!!ev.competitions?.[0]?.status?.type?.completed;
+    const live=!completed&&ev.competitions?.[0]?.status?.type?.id!=="1";
+    const started=completed||live||date<=now;
+    if(!map[key]){map[key]={startTime:ev.date,started};}
+    else{
+      if(date<new Date(map[key].startTime))map[key].startTime=ev.date;
+      if(started)map[key].started=true;
+    }
+  });
+  return map;
+}
+
+// Fetch game stats (leaders + team stats) from ESPN summary endpoint
+async function fetchGameStats(eventId){
+  try{
+    const r=await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=${eventId}`);
+    if(!r.ok)return null;
+    const j=await r.json();
+    // Extract top leaders per team
+    const leaders=(j.leaders||[]).map(tl=>({
+      teamAbbr:tl.team?.abbreviation,
+      pts:tl.leaders?.find(l=>l.name==="points")?.leaders?.[0],
+      reb:tl.leaders?.find(l=>l.name==="rebounds")?.leaders?.[0],
+      ast:tl.leaders?.find(l=>l.name==="assists")?.leaders?.[0],
+    }));
+    // Extract team box score stats
+    const teams=(j.boxscore?.teams||[]).map(bt=>({
+      teamAbbr:bt.team?.abbreviation,
+      stats:Object.fromEntries((bt.statistics||[]).map(s=>[s.name,s.displayValue])),
+    }));
+    return {leaders,teams};
+  }catch{return null;}
 }
 
 // ─── COUNTDOWN ───────────────────────────────────────────────────────────────
@@ -244,12 +340,12 @@ const inp={width:"100%",padding:"10px 13px",border:`1px solid ${C.bd}`,borderRad
 const sel={padding:"8px 10px",border:`1px solid ${C.bd}`,borderRadius:8,
   background:C.bg0,color:C.t1,fontSize:13,cursor:"pointer",outline:"none"};
 const btn={
-  p:{padding:"10px 20px",border:"none",borderRadius:10,background:"linear-gradient(135deg,#f97316,#dc6004)",color:"#fff",fontWeight:800,cursor:"pointer",fontSize:14},
-  s:{padding:"10px 20px",border:"none",borderRadius:10,background:"linear-gradient(135deg,#34d399,#059669)",color:"#fff",fontWeight:800,cursor:"pointer",fontSize:14},
-  w:{padding:"10px 18px",border:"1px solid rgba(251,191,36,.4)",borderRadius:10,background:"rgba(251,191,36,.08)",color:"#fbbf24",fontWeight:800,cursor:"pointer",fontSize:13},
-  g:{padding:"8px 14px",border:`1px solid ${C.bd}`,borderRadius:9,background:"transparent",color:C.t2,fontWeight:700,cursor:"pointer",fontSize:13},
-  a:{padding:"8px 14px",border:`1px solid #f97316`,borderRadius:8,background:"rgba(249,115,22,.12)",color:"#f97316",fontWeight:700,cursor:"pointer",fontSize:13},
-  danger:{padding:"6px 12px",border:"1px solid rgba(248,113,113,.4)",borderRadius:8,background:"rgba(248,113,113,.08)",color:"#f87171",fontWeight:700,cursor:"pointer",fontSize:12},
+  p:{padding:"11px 22px",border:"none",borderRadius:11,background:"linear-gradient(135deg,#f97316,#dc6004)",color:"#fff",fontWeight:800,cursor:"pointer",fontSize:14,boxShadow:"0 4px 16px rgba(249,115,22,.35)",letterSpacing:.3},
+  s:{padding:"11px 22px",border:"none",borderRadius:11,background:"linear-gradient(135deg,#34d399,#059669)",color:"#fff",fontWeight:800,cursor:"pointer",fontSize:14,boxShadow:"0 4px 14px rgba(52,211,153,.3)"},
+  w:{padding:"10px 18px",border:"1px solid rgba(251,191,36,.4)",borderRadius:10,background:"rgba(251,191,36,.09)",color:"#fbbf24",fontWeight:800,cursor:"pointer",fontSize:13},
+  g:{padding:"8px 15px",border:`1px solid ${C.bdL}`,borderRadius:9,background:"rgba(255,255,255,.04)",color:C.t2,fontWeight:700,cursor:"pointer",fontSize:13},
+  a:{padding:"9px 16px",border:`1px solid rgba(249,115,22,.5)`,borderRadius:9,background:"rgba(249,115,22,.1)",color:"#f97316",fontWeight:700,cursor:"pointer",fontSize:13},
+  danger:{padding:"6px 12px",border:"1px solid rgba(248,113,113,.4)",borderRadius:8,background:"rgba(248,113,113,.07)",color:"#f87171",fontWeight:700,cursor:"pointer",fontSize:12},
 };
 
 // ─── APP ROOT ────────────────────────────────────────────────────────────────
@@ -359,11 +455,14 @@ export default function App(){
 
   // ── Results (admin) → Supabase + realtime ─────────────────────────────────
   const updateRes=(updater)=>{
+    let next;
     setRes(prev=>{
-      const next=typeof updater==="function"?updater(prev):updater;
-      sb.from('results').update({data:next}).eq('id',1);
+      next=typeof updater==="function"?updater(prev):updater;
       return next;
     });
+    // Save outside the state updater so React's concurrent mode doesn't swallow the write
+    sb.from('results').upsert({id:1,data:next})
+      .then(({error})=>{if(error) console.error('Results save error:',error);});
   };
   const setPoR=(sid,w,g)=>updateRes(p=>({...p,po:{...p.po,[sid]:{w,g:parseInt(g)||null}}}));
   const setPiR=(mid,w)=>updateRes(p=>({...p,pi:{...p.pi,[mid]:{w}}}));
@@ -372,19 +471,30 @@ export default function App(){
 
   // ── Config (admin) → Supabase + realtime ──────────────────────────────────
   const setCfg=(updater)=>{
+    let next;
     setCfgRaw(prev=>{
-      const next=typeof updater==="function"?updater(prev):updater;
-      sb.from('app_config').update({data:next}).eq('id',1);
+      next=typeof updater==="function"?updater(prev):updater;
       return next;
     });
+    // Save outside the state updater so React's concurrent mode doesn't swallow the write
+    sb.from('app_config').upsert({id:1,data:next})
+      .then(({error})=>{if(error) console.error('Config save error:',error);});
   };
 
   // ── Loading screen ────────────────────────────────────────────────────────
   if(loading) return(
-    <div style={{minHeight:"100vh",background:C.bg0,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}>
-      <div style={{fontSize:52}}>🏀</div>
-      <div style={{color:C.t2,fontSize:15,fontWeight:700}}>Loading league data…</div>
-      <div style={{color:C.t3,fontSize:12}}>Connecting to database</div>
+    <div style={{minHeight:"100vh",background:C.bg0,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:20}}>
+      <div style={{position:"relative"}}>
+        <div style={{fontSize:64,filter:"drop-shadow(0 0 24px rgba(249,115,22,.6))"}}>🏀</div>
+        <div style={{position:"absolute",inset:-8,borderRadius:"50%",border:"2px solid rgba(249,115,22,.2)",animation:"spin 2s linear infinite"}}/>
+      </div>
+      <div style={{textAlign:"center"}}>
+        <div style={{color:C.t1,fontSize:18,fontWeight:800,fontFamily:"Georgia,serif",letterSpacing:"-0.5px"}}>NBA Playoffs 2026</div>
+        <div style={{color:C.t3,fontSize:12,marginTop:4,letterSpacing:"2px",textTransform:"uppercase"}}>Loading League Data…</div>
+      </div>
+      <div style={{display:"flex",gap:6}}>
+        {[0,1,2].map(i=><div key={i} style={{width:8,height:8,borderRadius:"50%",background:C.acc,opacity:.4+(i*.3)}}/>)}
+      </div>
     </div>
   );
 
@@ -404,24 +514,39 @@ function Auth({onLogin,onReg,leagueName}){
   const [name,setName]=useState(""); const [email,setEmail]=useState(""); const [pw,setPw]=useState(""); const [err,setErr]=useState("");
   const go=()=>{setErr("");const e=mode==="reg"?onReg(name.trim(),email.trim(),pw):onLogin(email.trim(),pw);if(e)setErr(e);};
   return(
-    <div style={{minHeight:"100vh",background:C.bg0,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
-      <div style={{background:C.bg1,border:`1px solid ${C.bd}`,borderRadius:22,padding:"40px 36px",width:"100%",maxWidth:380,boxShadow:"0 32px 80px #000b"}}>
+    <div style={{minHeight:"100vh",background:`radial-gradient(ellipse at 30% 20%,rgba(249,115,22,.12) 0%,transparent 60%), radial-gradient(ellipse at 80% 80%,rgba(56,189,248,.07) 0%,transparent 50%),${C.bg0}`,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div style={{width:"100%",maxWidth:400}}>
+        {/* Logo / branding */}
         <div style={{textAlign:"center",marginBottom:28}}>
-          <div style={{fontSize:48,marginBottom:8}}>🏀</div>
-          <h1 style={{margin:0,fontSize:26,fontWeight:900,color:C.t1,fontFamily:"Georgia,serif",letterSpacing:"-1px"}}>{leagueName||"NBA Playoffs 2026"}</h1>
-          <p style={{margin:"4px 0 0",color:C.t3,fontSize:11,letterSpacing:"2.5px",textTransform:"uppercase"}}>Prediction League</p>
+          <div style={{fontSize:56,filter:"drop-shadow(0 0 28px rgba(249,115,22,.7))",marginBottom:12}}>🏀</div>
+          <h1 style={{margin:"0 0 4px",fontSize:28,fontWeight:900,color:C.t1,fontFamily:"Georgia,serif",letterSpacing:"-1px",
+            background:"linear-gradient(135deg,#fff 30%,#f97316 100%)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>
+            {leagueName||"NBA Playoffs 2026"}
+          </h1>
+          <p style={{margin:0,color:C.t3,fontSize:11,letterSpacing:"3px",textTransform:"uppercase"}}>Prediction League</p>
         </div>
-        <div style={{display:"flex",background:C.bg0,borderRadius:10,padding:4,marginBottom:20}}>
-          {[["login","Sign In"],["reg","Join League"]].map(([k,l])=>(
-            <button key={k} onClick={()=>{setMode(k);setErr("");}} style={{flex:1,padding:"9px",border:"none",cursor:"pointer",borderRadius:8,fontWeight:700,fontSize:14,background:mode===k?C.bg3:"transparent",color:mode===k?C.t1:C.t3}}>{l}</button>
-          ))}
+
+        {/* Card */}
+        <div style={{background:"linear-gradient(160deg,rgba(22,32,52,.95),rgba(11,20,36,.98))",border:"1px solid rgba(249,115,22,.15)",borderRadius:22,padding:"32px 28px",boxShadow:"0 32px 80px rgba(0,0,0,.7),0 0 0 1px rgba(255,255,255,.03)"}}>
+          {/* Tabs */}
+          <div style={{display:"flex",background:C.bg0,borderRadius:11,padding:4,marginBottom:22,gap:4}}>
+            {[["login","🔑 Sign In"],["reg","✨ Join League"]].map(([k,l])=>(
+              <button key={k} onClick={()=>{setMode(k);setErr("");}} style={{flex:1,padding:"10px",border:"none",cursor:"pointer",borderRadius:8,fontWeight:700,fontSize:13,
+                background:mode===k?"linear-gradient(135deg,rgba(249,115,22,.2),rgba(249,115,22,.08))":"transparent",
+                color:mode===k?C.acc:C.t3,
+                boxShadow:mode===k?"0 0 0 1px rgba(249,115,22,.3) inset":"none",
+                transition:"all .15s"}}>{l}</button>
+            ))}
+          </div>
+          {mode==="reg"&&<input style={{...inp,marginBottom:12}} placeholder="Your name" value={name} onChange={e=>setName(e.target.value)}/>}
+          <input style={{...inp,marginBottom:12}} placeholder="Email address" value={email} onChange={e=>setEmail(e.target.value)}/>
+          <input style={{...inp,marginBottom:err?8:20}} type="password" placeholder="Password" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()}/>
+          {err&&<div style={{background:C.erB,border:"1px solid rgba(248,113,113,.3)",borderRadius:8,padding:"8px 12px",color:C.er,fontSize:12,fontWeight:700,textAlign:"center",marginBottom:14}}>{err}</div>}
+          <button onClick={go} style={{...btn.p,width:"100%",padding:14,fontSize:15,borderRadius:12}}>
+            {mode==="login"?"Enter the League →":"Create Account →"}
+          </button>
+          <p style={{textAlign:"center",color:C.t3,fontSize:11,marginTop:16,marginBottom:0}}>Admin? Use email <code style={{color:C.acc,background:"rgba(249,115,22,.1)",padding:"1px 5px",borderRadius:4}}>admin</code></p>
         </div>
-        {mode==="reg"&&<input style={{...inp,marginBottom:12}} placeholder="Your name" value={name} onChange={e=>setName(e.target.value)}/>}
-        <input style={{...inp,marginBottom:12}} placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)}/>
-        <input style={{...inp,marginBottom:err?8:16}} type="password" placeholder="Password" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()}/>
-        {err&&<p style={{color:C.er,fontSize:13,margin:"0 0 12px",textAlign:"center"}}>{err}</p>}
-        <button onClick={go} style={{...btn.p,width:"100%",padding:13,fontSize:15}}>{mode==="login"?"Enter the League →":"Create Account →"}</button>
-        <p style={{textAlign:"center",color:C.t3,fontSize:11,marginTop:16}}>Are you the admin? Use email <code style={{color:C.acc}}>admin</code></p>
       </div>
     </div>
   );
@@ -459,22 +584,54 @@ function Main({me,all,res,cfg,bettingOpen,savePO,savePI,savePhoto,logout}){
   ];
   return(
     <div style={{minHeight:"100vh",background:C.bg0,color:C.t1,fontFamily:"'DM Sans','Segoe UI',sans-serif"}}>
-      <header style={{background:C.bg1,borderBottom:`1px solid ${C.bd}`,padding:"10px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap",position:"sticky",top:0,zIndex:50}}>
-        <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <span style={{fontSize:24}}>🏆</span>
-          <div><div style={{fontWeight:900,fontSize:15,fontFamily:"Georgia,serif"}}>NBA Playoffs 2026</div><div style={{fontSize:9,color:C.t3,letterSpacing:"2px",textTransform:"uppercase"}}>Prediction League</div></div>
+      {/* ── HEADER ── */}
+      <header style={{
+        background:"linear-gradient(90deg,#071222 0%,#0a1828 60%,#07101f 100%)",
+        borderBottom:`1px solid rgba(249,115,22,.18)`,
+        padding:"0 18px",height:58,
+        display:"flex",justifyContent:"space-between",alignItems:"center",
+        position:"sticky",top:0,zIndex:50,
+        boxShadow:"0 4px 24px rgba(0,0,0,.5)"
+      }}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <div style={{fontSize:26,filter:"drop-shadow(0 0 10px rgba(249,115,22,.7))"}}>🏆</div>
+          <div>
+            <div style={{fontWeight:900,fontSize:16,fontFamily:"Georgia,serif",letterSpacing:"-0.5px",
+              background:"linear-gradient(90deg,#fff 0%,#f97316 100%)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>
+              {cfg.leagueName||"NBA Playoffs 2026"}
+            </div>
+            <div style={{fontSize:9,color:C.t3,letterSpacing:"2.5px",textTransform:"uppercase",marginTop:1}}>Prediction League</div>
+          </div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <Avatar user={me} size={30} idx={scores.findIndex(s=>s.id===me.id)}/>
-          <div style={{textAlign:"right"}}><div style={{fontWeight:700,fontSize:13}}>{me.name}</div><div style={{fontSize:11}}><span style={{color:C.acc,fontWeight:800}}>{myS?.total??0}</span><span style={{color:C.t3}}> pts · #{myR}/{scores.length}</span></div></div>
-          <button onClick={logout} style={btn.g}>← Exit</button>
+          {/* My score badge */}
+          <div style={{background:"rgba(249,115,22,.1)",border:"1px solid rgba(249,115,22,.25)",borderRadius:10,padding:"5px 11px",textAlign:"right"}}>
+            <div style={{fontSize:10,color:C.t3,fontWeight:700}}>#{myR} · {me.name.split(" ")[0]}</div>
+            <div style={{fontSize:16,fontWeight:900,color:C.acc,lineHeight:1}}>{myS?.total??0} <span style={{fontSize:10,fontWeight:600,color:C.t3}}>pts</span></div>
+          </div>
+          <Avatar user={me} size={34} idx={scores.findIndex(s=>s.id===me.id)}/>
+          <button onClick={logout} style={{...btn.g,padding:"7px 12px",fontSize:12}}>Exit</button>
         </div>
       </header>
-      <nav style={{display:"flex",background:C.bg1,borderBottom:`1px solid ${C.bd}`,overflowX:"auto"}}>
-        {TABS.map(t=><button key={t.k} onClick={()=>setTab(t.k)} style={{padding:"10px 14px",border:"none",background:"transparent",color:tab===t.k?C.acc:C.t3,cursor:"pointer",fontSize:12,fontWeight:700,borderBottom:`2px solid ${tab===t.k?C.acc:"transparent"}`,whiteSpace:"nowrap"}}>{t.i} {t.l}</button>)}
+      {/* ── NAV ── */}
+      <nav style={{display:"flex",background:C.bg1,borderBottom:`1px solid ${C.bd}`,overflowX:"auto",scrollbarWidth:"none",msOverflowStyle:"none"}}>
+        {TABS.map(t=>(
+          <button key={t.k} onClick={()=>setTab(t.k)} style={{
+            padding:"0 14px",height:46,border:"none",background:"transparent",
+            color:tab===t.k?C.acc:C.t3,
+            cursor:"pointer",fontSize:12,fontWeight:tab===t.k?800:600,
+            borderBottom:`2.5px solid ${tab===t.k?C.acc:"transparent"}`,
+            whiteSpace:"nowrap",display:"flex",alignItems:"center",gap:5,
+            boxShadow:tab===t.k?"inset 0 -10px 20px rgba(249,115,22,.06)":"none",
+            transition:"color .15s,border-color .15s",
+          }}>
+            <span style={{fontSize:14}}>{t.i}</span>
+            <span style={{display:window.innerWidth<480?"none":"inline"}}>{t.l}</span>
+          </button>
+        ))}
       </nav>
-      {!bettingOpen&&<div style={{background:"rgba(248,113,113,.1)",borderBottom:"1px solid rgba(248,113,113,.3)",padding:"8px 18px",textAlign:"center",color:C.er,fontSize:12,fontWeight:700}}>🔒 Betting is closed — predictions are locked</div>}
-      <main style={{maxWidth:980,margin:"0 auto",padding:"20px 14px 70px"}}>
+      {!bettingOpen&&<div style={{background:"rgba(248,113,113,.08)",borderBottom:"1px solid rgba(248,113,113,.25)",padding:"7px 18px",textAlign:"center",color:C.er,fontSize:12,fontWeight:700,letterSpacing:.3}}>🔒 Betting closed — predictions are locked</div>}
+      <main style={{maxWidth:980,margin:"0 auto",padding:"22px 14px 80px"}}>
         {tab==="picks"   &&<Picks   me={me} res={res} cfg={cfg} onSave={savePO} bettingOpen={bettingOpen} finalsOpen={finalsOpen} getRoundDeadline={getRoundDeadline} roundBettingOpen={roundBettingOpen}/>}
         {tab==="playin"  &&<Playin  me={me} res={res} cfg={cfg} onSave={savePI} bettingOpen={bettingOpen} piDeadline={getRoundDeadline('pi')} roundBettingOpen={roundBettingOpen}/>}
         {tab==="games"   &&<Games/>}
@@ -497,10 +654,51 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
   const [saved,setSaved]=useState(false);
   const [saveErr,setSaveErr]=useState("");
   const [activeR,setActiveR]=useState(cfg.openR||"r1");
+  const [seriesStartMap,setSeriesStartMap]=useState({});
   const openIdx=ROUND_KEYS.indexOf(cfg.openR||"r1");
   // Per-round deadline
   const activeDeadline=getRoundDeadline?getRoundDeadline(activeR):null;
   const activeBettingOpen=bettingOpen&&(roundBettingOpen?roundBettingOpen(activeR):true);
+
+  // Fetch the ESPN schedule on mount AND whenever res.pi changes. Round 1
+  // matchups involving E7/E8/W7/W8 become fully-known only after Play-In
+  // resolves, so the start-time map must be rebuilt so their tipoffs are
+  // picked up for per-game locking.
+  useEffect(()=>{
+    let cancelled=false;
+    fetchPlayoffGames().then(evts=>{
+      if(!cancelled) setSeriesStartMap(buildSeriesStartMap(evts));
+    });
+    return()=>{cancelled=true;};
+  },[res?.pi]);
+
+  // Keep the local draft in sync with realtime updates to me.po (another tab,
+  // admin action, etc.) without clobbering the user's in-progress edits.
+  // We only back-fill keys that are NOT already in the local draft.
+  useEffect(()=>{
+    setDraft(prev=>{
+      const next={...prev};
+      for(const [k,v] of Object.entries(me.po||{})){
+        if(!(k in next)) next[k]=v;
+      }
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[me.po]);
+
+  // Returns true if this series' first game has already started (or global betting is closed).
+  // The per-game deadline is derived from the ESPN schedule (info.startTime).
+  const isSeriesLocked=(s)=>{
+    if(!activeBettingOpen)return true;
+    // Hard fallback: if admin already entered a result, the series is definitely over
+    if(res.po?.[s.id]?.w)return true;
+    const ra=resolveTeam(s.t1,res), rb=resolveTeam(s.t2,res);
+    if(!ra||!rb||!T[ra]||!T[rb])return false;
+    const info=seriesStartMap[[ra,rb].sort().join('|')];
+    if(!info)return false;
+    // Compare the live clock (new Date()) against the specific game's start time
+    return info.started||new Date()>=new Date(info.startTime);
+  };
 
   // Split series by conference for current round
   const allRoundSeries=SERIES.filter(s=>s.r===activeR);
@@ -510,16 +708,49 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
   const roundPts=ROUNDS.find(r=>r.k===activeR).pts;
 
   const setPred=(sid,field,val)=>{setSaveErr("");setDraft(p=>({...p,[sid]:{...(p[sid]||{}),[field]:field==="g"?parseInt(val):val}}));};
-  const doSave=()=>{
-    // Validate: every series with a winner must also have a game count
+
+  // Save flow: re-evaluate every series' lock status against the live clock
+  // at the moment the user clicks Save. For any series whose first game has
+  // already tipped off, we refuse to overwrite the existing pick and surface
+  // a "Game already started" notification. For series that are still open,
+  // the draft value is merged into the payload. This is the core of the
+  // per-game (series) deadline behavior.
+  const doSave=async()=>{
     const allOpenSeries=SERIES.filter(s=>ROUND_KEYS.indexOf(s.r)<=openIdx);
-    const incomplete=allOpenSeries.filter(s=>draft[s.id]?.w&&!draft[s.id]?.g);
+    const currentPo=me.po||{};
+    // Start from the most recent server state so we never drop other picks
+    const payload={...currentPo};
+    const rejected=[];
+    for(const s of allOpenSeries){
+      if(isSeriesLocked(s)){
+        const d=draft[s.id], o=currentPo[s.id];
+        // Flag if the user tried to change this pick after the game started
+        if(d&&d.w&&(d.w!==o?.w||d.g!==o?.g)) rejected.push(s);
+        // Keep server-side value for locked series — do NOT overwrite
+      } else if(draft[s.id]){
+        payload[s.id]=draft[s.id];
+      }
+    }
+    // Validate: every unlocked series with a winner must also have a game count
+    const incomplete=allOpenSeries.filter(s=>!isSeriesLocked(s)&&payload[s.id]?.w&&!payload[s.id]?.g);
     if(incomplete.length>0){
-      setSaveErr(`⚠️ נא לבחור גם כמה משחקים ב-${incomplete.length} סדרה${incomplete.length>1?"ות":""} (${incomplete.map(s=>sn(resolveTeam(s.t1,res)||s.t1)+" vs "+sn(resolveTeam(s.t2,res)||s.t2)).join(", ")})`);
+      setSaveErr(`⚠️ Please also pick the number of games for ${incomplete.length} series (${incomplete.map(s=>sn(resolveTeam(s.t1,res)||s.t1)+" vs "+sn(resolveTeam(s.t2,res)||s.t2)).join(", ")})`);
       return;
     }
-    setSaveErr("");
-    onSave(me.id,draft,champ||null,mvp||null);
+    if(rejected.length>0){
+      setSaveErr(`🔒 Game already started — the following picks were not updated: ${rejected.map(s=>sn(resolveTeam(s.t1,res)||s.t1)+" vs "+sn(resolveTeam(s.t2,res)||s.t2)).join(", ")}`);
+    } else {
+      setSaveErr("");
+    }
+    // Mirror the payload back into the local draft so the UI stays truthful
+    setDraft(payload);
+    try{
+      await onSave(me.id,payload,champ||null,mvp||null);
+    }catch(err){
+      console.error('❌ Picks save error:',err);
+      setSaveErr(prev=>prev||`Save failed: ${err?.message||err}`);
+      return;
+    }
     setSaved(true);
     setTimeout(()=>setSaved(false),2500);
   };
@@ -531,13 +762,16 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
     const resolvedPred=pred?.w?{...pred,w:resolveTeam(pred.w,res)||pred.w}:pred;
     const sc=scoreS(resolvedPred,real,roundPts);
     const bg=BG[sc.t];
+    const locked=isSeriesLocked(s);
     return(
-      <div style={{background:sc.t!=="pending"?bg.bg:C.bg2,border:`1px solid ${sc.t!=="pending"?bg.c:C.bdL}`,borderRadius:14,padding:16}}>
+      <div style={{background:sc.t!=="pending"?bg.bg:C.bg2,border:`1px solid ${sc.t!=="pending"?bg.c:locked&&!real?.w?"rgba(248,113,113,.3)":C.bdL}`,borderRadius:14,padding:16}}>
+        {/* Per-series lock badge — shown when game started but result not yet entered */}
+        {locked&&!real?.w&&<div style={{background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",borderRadius:7,padding:"4px 10px",marginBottom:8,fontSize:11,color:C.er,fontWeight:700,display:"flex",alignItems:"center",gap:5}}>🔒 Game started — pick is locked</div>}
         <div style={{display:"flex",background:C.bg3,borderRadius:10,overflow:"hidden",marginBottom:10}}>
           {[{k:s.t1},{k:s.t2}].map(({k},idx)=>{
             const rk=resolveTeam(k,res)||k; // resolved for display (logo + name)
             const isSel=pred.w===k;
-            return <button key={k} onClick={()=>setPred(s.id,"w",k)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"10px 6px",border:"none",cursor:"pointer",background:isSel?`linear-gradient(${idx===0?"135deg":"225deg"},rgba(249,115,22,.2),transparent)`:"transparent",outline:isSel?`2px solid ${C.acc}`:"none",outlineOffset:-2,position:"relative"}}>
+            return <button key={k} disabled={locked} onClick={locked?undefined:()=>setPred(s.id,"w",k)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"10px 6px",border:"none",cursor:locked?"not-allowed":"pointer",background:isSel?`linear-gradient(${idx===0?"135deg":"225deg"},rgba(249,115,22,.2),transparent)`:"transparent",outline:isSel?`2px solid ${C.acc}`:"none",outlineOffset:-2,position:"relative",opacity:locked?0.72:1}}>
               <Logo abbr={rk} size={40}/>
               <div style={{fontSize:10,fontWeight:700,color:isSel?C.acc:C.t2,marginTop:5,textAlign:"center",lineHeight:1.2}}>{sn(rk)}</div>
               {isSel&&<div style={{fontSize:9,color:C.acc,fontWeight:800}}>✓ PICKED</div>}
@@ -547,7 +781,7 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
         </div>
         <div style={{display:"flex",alignItems:"center",gap:5}}>
           <span style={{fontSize:11,color:C.t3,marginRight:2}}>Games:</span>
-          {[4,5,6,7].map(g=><button key={g} onClick={()=>setPred(s.id,"g",g)} style={{width:30,height:30,border:`1px solid ${pred.g===g?C.acc:C.bd}`,borderRadius:7,background:pred.g===g?C.aD:"transparent",color:pred.g===g?C.acc:C.t3,fontWeight:700,cursor:"pointer",fontSize:12}}>{g}</button>)}
+          {[4,5,6,7].map(g=><button key={g} disabled={locked} onClick={locked?undefined:()=>setPred(s.id,"g",g)} style={{width:30,height:30,border:`1px solid ${pred.g===g?C.acc:C.bd}`,borderRadius:7,background:pred.g===g?C.aD:"transparent",color:pred.g===g?C.acc:C.t3,fontWeight:700,cursor:locked?"not-allowed":"pointer",fontSize:12,opacity:locked?0.72:1}}>{g}</button>)}
         </div>
         {cfg.rPo&&real?.w&&<div style={{marginTop:8,background:C.bg4,borderRadius:7,padding:"6px 10px",display:"flex",justifyContent:"space-between"}}>
           <span style={{fontSize:11,color:C.ok,fontWeight:700}}>✓ {sn(real.w)} in {real.g}</span>
@@ -668,7 +902,7 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
         {activeBettingOpen
           ?<>
             <button onClick={doSave} style={{...btn.p,padding:"13px 44px",fontSize:15}}>{saved?"✓ Picks Saved!":"Save My Predictions"}</button>
-            {saveErr&&<div style={{background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.35)",borderRadius:10,padding:"10px 16px",marginTop:10,color:C.er,fontWeight:700,fontSize:13,textAlign:"right",direction:"rtl"}}>{saveErr}</div>}
+            {saveErr&&<div style={{background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.35)",borderRadius:10,padding:"10px 16px",marginTop:10,color:C.er,fontWeight:700,fontSize:13}}>{saveErr}</div>}
             {!saveErr&&<p style={{color:C.t3,fontSize:11,marginTop:8}}>Predictions lock at the deadline set by admin.</p>}
           </>
           :<div style={{background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.3)",borderRadius:12,padding:"14px 18px",color:C.er,fontWeight:700,fontSize:14}}>🔒 Betting is closed — predictions are locked</div>
@@ -680,11 +914,96 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
 
 // ─── PLAY-IN ─────────────────────────────────────────────────────────────────
 function Playin({me,res,cfg,onSave,bettingOpen,piDeadline,roundBettingOpen}){
-  const [draft,setDraft]=useState({...me.pi});
+  const [draft,setDraft]=useState({...(me.pi||{})});
   const [saved,setSaved]=useState(false);
+  const [saveErr,setSaveErr]=useState("");
+  const [piStartMap,setPiStartMap]=useState({});
   const piBettingOpen=bettingOpen&&(roundBettingOpen?roundBettingOpen('pi'):true);
-  const doSave=()=>{onSave(me.id,draft);setSaved(true);setTimeout(()=>setSaved(false),2500);};
-  const east=PLAYIN.filter(m=>m.conf==="East"), west=PLAYIN.filter(m=>m.conf==="West");
+
+  // Resolve every Play-In matchup (turns the hardcoded ["",""] loser-game
+  // teams into real team abbrs once the prior G1/G2 results are in).
+  const resolvedPlayin=useMemo(()=>PLAYIN.map(m=>resolvePlayinMatch(m,res)),[res]);
+
+  // Fetch the ESPN schedule on mount AND whenever res.pi changes. This is
+  // important for the loser games: ESPN only lists those events after the
+  // prior games finish, and the schedule map must be rebuilt so the newly
+  // announced games get their start times picked up for per-game locking.
+  useEffect(()=>{
+    let cancelled=false;
+    fetchPlayoffGames().then(evts=>{
+      if(!cancelled) setPiStartMap(buildSeriesStartMap(evts));
+    });
+    return()=>{cancelled=true;};
+  },[res?.pi]);
+
+  // Keep the local draft in sync with realtime updates to me.pi (another tab,
+  // admin, etc.) without clobbering the user's in-progress edits. We only
+  // back-fill keys that are NOT already in the local draft.
+  useEffect(()=>{
+    setDraft(prev=>{
+      const next={...prev};
+      for(const [k,v] of Object.entries(me.pi||{})){
+        if(!(k in next)) next[k]=v;
+      }
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[me.pi]);
+
+  // A play-in game is locked once its specific game has started (or global betting is closed)
+  const isGameLocked=(m)=>{
+    if(!piBettingOpen)return true;
+    if(!m.teams[0]||!m.teams[1])return false;
+    // Hard fallback: admin already entered a result → game is definitely over
+    if(res.pi?.[m.id]?.w)return true;
+    const info=piStartMap[[...m.teams].sort().join('|')];
+    if(!info)return false;
+    // Per-game deadline: once the specific start time is reached, lock this game.
+    return info.started||new Date()>=new Date(info.startTime);
+  };
+
+  // Save flow: re-check each game's lock status at the moment of save against
+  // the live clock (new Date()). For any game that has already started, we
+  // refuse to overwrite the existing pick and surface a notification. For
+  // games that are still open, the draft value is written to Supabase.
+  const doSave=async()=>{
+    setSaveErr("");
+    const currentPi=me.pi||{};
+    // Start from the most recent server state so we never drop another game's pick
+    const payload={...currentPi};
+    const rejected=[];
+    // Use resolvedPlayin so loser-game teams are real (not the hardcoded "")
+    for(const m of resolvedPlayin){
+      if(!m.teams[0]||!m.teams[1]) continue;
+      if(isGameLocked(m)){
+        const d=draft[m.id], o=currentPi[m.id];
+        // If the user changed their pick after the game started, flag it
+        if(d&&d.w&&d.w!==o?.w) rejected.push(m);
+        // Keep the server-side value for locked games — do NOT overwrite
+      } else if(draft[m.id]){
+        payload[m.id]=draft[m.id];
+      }
+    }
+    if(rejected.length>0){
+      setSaveErr(`🔒 Game already started — pick not updated: ${rejected.map(m=>m.label).join(", ")}`);
+    }
+    // Mirror the payload back into the local draft so the UI is truthful
+    setDraft(payload);
+    try{
+      await onSave(me.id,payload);
+    }catch(err){
+      console.error('❌ Play-In save error:',err);
+      setSaveErr(prev=>prev||`Save failed: ${err?.message||err}`);
+      return;
+    }
+    setSaved(true);
+    setTimeout(()=>setSaved(false),2500);
+  };
+  // Split the RESOLVED matchups (so the loser games display their real teams
+  // and logos once G1/G2 are decided).
+  const east=resolvedPlayin.filter(m=>m.conf==="East"), west=resolvedPlayin.filter(m=>m.conf==="West");
+  // Are ALL games with known teams locked? Then show global closed message instead of Save button
+  const allLocked=resolvedPlayin.filter(m=>m.teams[0]&&m.teams[1]).every(m=>isGameLocked(m));
   return(
     <div>
       <div style={{display:"inline-flex",alignItems:"center",gap:6,background:"rgba(249,115,22,.1)",border:"1px solid rgba(249,115,22,.3)",borderRadius:7,padding:"3px 10px",fontSize:10,fontWeight:800,color:C.acc,textTransform:"uppercase",letterSpacing:"1px",marginBottom:10}}>⚡ Play-In · April 14–17</div>
@@ -707,17 +1026,21 @@ function Playin({me,res,cfg,onSave,bettingOpen,piDeadline,roundBettingOpen}){
             const correct=cfg.rPi&&real&&picked&&picked===real;
             const wrong=cfg.rPi&&real&&picked&&picked!==real;
             const hasTeams=m.teams[0]&&m.teams[1];
+            const locked=isGameLocked(m);
             return(
-              <div key={m.id} style={{background:correct?C.okB:wrong?C.erB:C.bg2,border:`1px solid ${correct?C.ok:wrong?C.er:C.bdL}`,borderRadius:12,marginBottom:8,overflow:"hidden"}}>
+              <div key={m.id} style={{background:correct?C.okB:wrong?C.erB:C.bg2,border:`1px solid ${correct?C.ok:wrong?C.er:locked&&!real?"rgba(248,113,113,.3)":C.bdL}`,borderRadius:12,marginBottom:8,overflow:"hidden"}}>
                 <div style={{background:C.bg3,padding:"8px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
                   <div><div style={{fontWeight:800,fontSize:13}}>{m.label}</div><div style={{fontSize:11,color:C.t3}}>{m.desc}</div></div>
-                  {cfg.rPi&&real&&<span style={{color:C.ok,fontWeight:700,fontSize:11}}>✓ {T[real]?.n||real} advances</span>}
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    {locked&&!real&&<span style={{color:C.er,fontWeight:700,fontSize:11}}>🔒 Game started</span>}
+                    {cfg.rPi&&real&&<span style={{color:C.ok,fontWeight:700,fontSize:11}}>✓ {T[real]?.n||real} advances</span>}
+                  </div>
                 </div>
                 {hasTeams?(
-                  <div style={{display:"flex"}}>
+                  <div style={{display:"flex",opacity:locked?0.72:1}}>
                     {m.teams.map((tk,idx)=>{
                       const isSel=picked===tk;
-                      return <button key={tk} onClick={()=>setDraft(p=>({...p,[m.id]:{w:tk}}))} style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"14px 10px",border:"none",cursor:"pointer",background:isSel?`linear-gradient(${idx===0?"to right":"to left"},rgba(249,115,22,.2),transparent)`:"transparent",borderRight:idx===0?`1px solid ${C.bd}`:"none",outline:isSel?`2px inset ${C.acc}`:"none"}}>
+                      return <button key={tk} disabled={locked} onClick={locked?undefined:()=>setDraft(p=>({...p,[m.id]:{w:tk}}))} style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"14px 10px",border:"none",cursor:locked?"not-allowed":"pointer",background:isSel?`linear-gradient(${idx===0?"to right":"to left"},rgba(249,115,22,.2),transparent)`:"transparent",borderRight:idx===0?`1px solid ${C.bd}`:"none",outline:isSel?`2px inset ${C.acc}`:"none"}}>
                         <Logo abbr={tk} size={44}/>
                         <div><div style={{fontWeight:700,fontSize:13,color:isSel?C.acc:C.t1}}>{T[tk]?.n||tk}</div>{isSel&&<div style={{fontSize:10,color:C.acc,fontWeight:800}}>✓ Your pick</div>}</div>
                       </button>;
@@ -732,8 +1055,11 @@ function Playin({me,res,cfg,onSave,bettingOpen,piDeadline,roundBettingOpen}){
         </div>
       ))}
       <div style={{textAlign:"center"}}>
-        {piBettingOpen
-          ?<button onClick={doSave} style={{...btn.p,padding:"12px 44px",fontSize:14}}>{saved?"✓ Saved!":"Save Play-In Picks"}</button>
+        {!allLocked
+          ?<>
+            <button onClick={doSave} style={{...btn.p,padding:"12px 44px",fontSize:14}}>{saved?"✓ Saved!":"Save Play-In Picks"}</button>
+            {saveErr&&<div style={{background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.35)",borderRadius:10,padding:"10px 16px",marginTop:10,color:C.er,fontWeight:700,fontSize:13}}>{saveErr}</div>}
+          </>
           :<div style={{background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.3)",borderRadius:12,padding:"12px 16px",color:C.er,fontWeight:700,fontSize:13}}>🔒 Play-In betting is closed</div>
         }
       </div>
@@ -762,20 +1088,31 @@ async function fetchAllInjuries(){
   const map={};
   await Promise.all(playoffTeams.map(async abbr=>{
     try{
+      // Primary: ESPN dedicated injuries endpoint (most accurate & up-to-date)
+      const tid=ESPN_IDS[abbr];
+      if(tid){
+        const r=await fetch(`https://sports.core.api.espn.com/v2/sports/basketball/leagues/nba/teams/${tid}/injuries?limit=25`);
+        if(r.ok){
+          const j=await r.json();
+          const injured=(j.items||[]).map(item=>({
+            name:item.athlete?.displayName||item.athlete?.shortName||"?",
+            status:item.type?.description||item.injury?.status||"Out",
+            detail:item.injury?.shortComment||item.injury?.longComment||"",
+            pos:item.athlete?.position?.abbreviation||"",
+          })).filter(a=>a.name&&a.name!=="?");
+          map[abbr]=injured;return;
+        }
+      }
+      // Fallback: roster endpoint filtered by non-active status
       const espn=T[abbr]?.e||abbr.toLowerCase();
-      const r=await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${espn}/roster`);
-      if(!r.ok) return;
-      const j=await r.json();
-      const groups=j.athletes||[];
-      const injured=groups.flatMap(g=>g.items||[]).filter(a=>{
-        const st=a.status?.type?.name||"";
-        return st&&st.toLowerCase()!=="active";
-      }).map(a=>({
-        name:a.displayName||a.shortName||"?",
-        status:a.status?.type?.name||"Out",
-        pos:a.position?.abbreviation||"",
-      }));
-      if(injured.length) map[abbr]=injured;
+      const r2=await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${espn}/roster`);
+      if(!r2.ok)return;
+      const j2=await r2.json();
+      const injured2=(j2.athletes||[]).flatMap(g=>g.items||[]).filter(a=>{
+        const st=(a.status?.type?.name||"").toLowerCase();
+        return st&&st!=="active";
+      }).map(a=>({name:a.displayName||a.shortName||"?",status:a.status?.type?.name||"Out",detail:"",pos:a.position?.abbreviation||""}));
+      map[abbr]=injured2;
     }catch{}
   }));
   return map;
@@ -785,12 +1122,16 @@ function Teams({res}){
   const [injuries,setInjuries]=useState({});
   const [injLoading,setInjLoading]=useState(false);
   const [expanded,setExpanded]=useState(null);
+  const [seriesScores,setSeriesScores]=useState({});
 
   const loadInjuries=()=>{
     setInjLoading(true);
     fetchAllInjuries().then(m=>{setInjuries(m);setInjLoading(false);});
   };
-  useEffect(()=>{loadInjuries();},[]);
+  useEffect(()=>{
+    loadInjuries();
+    fetchSeriesScores().then(setSeriesScores);
+  },[]);
 
   // Seed label helper
   const seedLabel=(abbr,placeholder)=>{
@@ -812,25 +1153,48 @@ function Teams({res}){
     const result=res?.po?.[s.id];
     const resolved2=T[rt2]; // true if Play-In resolved
 
-    const TeamCol=({abbr,placeholder,d,inj,side})=>(
+    const seriesKey=[rt1,rt2].sort().join('|');
+    const sd=seriesScores[seriesKey];
+    const sw1=sd?.wins?.[rt1]||0,sw2=sd?.wins?.[rt2]||0;
+    const liveLeader=sw1>sw2?rt1:sw2>sw1?rt2:null;
+
+    const TeamCol=({abbr,placeholder,d,inj,seriesWins})=>(
       <div style={{flex:1,padding:"14px 10px",display:"flex",flexDirection:"column",alignItems:"center",gap:5,textAlign:"center"}}>
         <Logo abbr={abbr} size={52}/>
         <div style={{fontWeight:900,fontSize:13,lineHeight:1.2,color:C.t1}}>{T[abbr]?.n||(placeholder?LABELS[placeholder]:abbr)||abbr}</div>
         <div style={{fontSize:10,color:C.t3}}>{d.rec||""}{d.seed?` · ${d.seed}`:(placeholder&&!T[abbr]?` · ${LABELS[placeholder]||placeholder}`:"")}</div>
         {d.odds&&<div style={{fontSize:10,color:C.acc,fontWeight:800}}>{d.odds}</div>}
+        {seriesWins>0&&<div style={{background:"rgba(52,211,153,.12)",border:"1px solid rgba(52,211,153,.3)",borderRadius:6,padding:"3px 8px",fontSize:10,color:C.ok,fontWeight:800}}>{seriesWins} W</div>}
         {inj.length>0&&<div style={{background:"rgba(248,113,113,.12)",border:"1px solid rgba(248,113,113,.3)",borderRadius:6,padding:"3px 8px",fontSize:9,color:C.er,fontWeight:700}}>{inj.length} injured</div>}
       </div>
     );
 
     return(
-      <div style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:14,marginBottom:10,overflow:"hidden"}}>
+      <div style={{background:C.bg2,border:`1px solid ${result?.w?C.ok+"44":liveLeader?C.acc+"33":C.bdL}`,borderRadius:14,marginBottom:10,overflow:"hidden"}}>
+        {/* Series progress bar (shown when games have been played) */}
+        {(sd?.games>0)&&!result?.w&&(
+          <div style={{background:C.bg3,borderBottom:`1px solid ${C.bdL}`,padding:"4px 12px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span style={{fontSize:10,color:liveLeader===rt1?C.ok:C.t3,fontWeight:liveLeader===rt1?800:600}}>{T[rt1]?.a} {sw1}</span>
+            <span style={{fontSize:9,color:C.t3,fontWeight:700}}>Series · {sd.games} game{sd.games>1?"s":""} played</span>
+            <span style={{fontSize:10,color:liveLeader===rt2?C.ok:C.t3,fontWeight:liveLeader===rt2?800:600}}>{sw2} {T[rt2]?.a}</span>
+          </div>
+        )}
+        {result?.w&&(
+          <div style={{background:"rgba(52,211,153,.06)",borderBottom:`1px solid ${C.ok}33`,padding:"4px 12px",display:"flex",justifyContent:"center",gap:6,alignItems:"center"}}>
+            <Logo abbr={result.w} size={14}/>
+            <span style={{fontSize:10,color:C.ok,fontWeight:800}}>{T[result.w]?.n} wins series in {result.g} games</span>
+          </div>
+        )}
         {/* Main row */}
         <div style={{display:"flex",alignItems:"stretch"}}>
-          <TeamCol abbr={rt1} placeholder={null} d={d1} inj={inj1} side="left"/>
+          <TeamCol abbr={rt1} placeholder={null} d={d1} inj={inj1} seriesWins={sw1}/>
           {/* Center */}
           <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"10px 6px",gap:4,minWidth:44}}>
-            {result?.w
-              ?<><Logo abbr={result.w} size={18}/><div style={{fontSize:8,color:C.ok,fontWeight:800,textAlign:"center"}}>W in {result.g}</div></>
+            {sd?.games>0&&!result?.w
+              ?<div style={{textAlign:"center"}}>
+                  <div style={{fontSize:16,fontWeight:900,color:C.t1,lineHeight:1}}>{sw1}–{sw2}</div>
+                  {liveLeader&&<div style={{fontSize:8,color:C.ok,fontWeight:800,marginTop:1}}>{T[liveLeader]?.a} leads</div>}
+                </div>
               :<div style={{fontSize:10,fontWeight:700,color:C.t3}}>VS</div>
             }
             <button onClick={()=>setExpanded(isExp?null:s.id)}
@@ -838,7 +1202,7 @@ function Teams({res}){
               {isExp?"▲":"▼"}
             </button>
           </div>
-          <TeamCol abbr={rt2} placeholder={T[rt2]?null:s.t2} d={d2} inj={inj2} side="right"/>
+          <TeamCol abbr={rt2} placeholder={T[rt2]?null:s.t2} d={d2} inj={inj2} seriesWins={sw2}/>
         </div>
 
         {/* Expanded details */}
@@ -988,55 +1352,200 @@ function Prizes({cfg}){
 // ─── BOARD ───────────────────────────────────────────────────────────────────
 function Board({scores,myId,cfg}){
   const rev=cfg.rPo||cfg.rPi;
-  const [gold,silver,bronze]=scores;
-  const podium=[silver,gold,bronze].filter(Boolean);
-  const podiumH=[140,190,110];
-  const podiumRanks=[2,1,3];
-  const medalEmoji=["🥇","🥈","🥉"];
-  const medalC=[C.gold,C.silver,C.bronze];
   const rPts=(u,r)=>SERIES.filter(s=>s.r===r).reduce((sum,s)=>sum+(u.bd?.[s.id]?.p||0),0);
   const piPts=(u)=>PLAYIN.reduce((sum,m)=>sum+(u.bd?.[m.id]?.p||0),0);
+  // Podium order: 2nd left, 1st center, 3rd right
+  const podium=scores.length>=2?[scores[1],scores[0],scores[2]].filter(Boolean):[];
+  const pConfig=[{rank:2,h:110,sz:46},{rank:1,h:158,sz:62},{rank:3,h:84,sz:38}];
+  const maxPts=scores[0]?.total||1;
+  // Mobile layout: switch to two-line rows when screen is narrow
+  const [isMobile,setIsMobile]=useState(typeof window!=="undefined"&&window.innerWidth<600);
+  useEffect(()=>{
+    const fn=()=>setIsMobile(window.innerWidth<600);
+    window.addEventListener("resize",fn);
+    return()=>window.removeEventListener("resize",fn);
+  },[]);
   return(
     <div>
-      {!rev&&<div style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:10,padding:"12px 16px",marginBottom:20,textAlign:"center",color:C.t3,fontSize:13}}>🔒 Scores reveal when admin opens the playoffs</div>}
-      {scores.length>=2&&rev&&<div style={{marginBottom:28}}>
-        <div style={{fontSize:10,fontWeight:800,color:C.t3,textTransform:"uppercase",letterSpacing:"2px",marginBottom:16,textAlign:"center"}}>🏆 Podium</div>
-        <div style={{display:"flex",alignItems:"flex-end",justifyContent:"center",gap:8}}>
-          {podium.map((s,vi)=>{
-            const rr=podiumRanks[vi]; const col=medalC[rr-1];
-            return <div key={s.id} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:5}}>
-              <Avatar user={s} size={vi===1?52:40} idx={scores.indexOf(s)}/>
-              <div style={{fontSize:vi===1?32:24}}>{medalEmoji[rr-1]}</div>
-              <div style={{fontSize:10,fontWeight:800,color:col,textAlign:"center",maxWidth:80,lineHeight:1.2}}>{s.name}{s.id===myId?" (you)":""}</div>
-              <div style={{fontSize:vi===1?18:14,fontWeight:900,color:col}}>{s.total}</div>
-              <div style={{width:vi===1?88:70,height:podiumH[vi],background:`linear-gradient(to top,${col}28,${col}0a)`,border:`2px solid ${col}44`,borderRadius:"8px 8px 0 0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,color:col}}>{rr}</div>
-            </div>;
+      {/* ── Page title ── */}
+      <div style={{marginBottom:22}}>
+        <h2 style={{margin:"0 0 3px",fontWeight:900,fontFamily:"Georgia,serif",fontSize:22,
+          background:"linear-gradient(90deg,#fff,#f97316)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>
+          🏅 Standings
+        </h2>
+        <p style={{margin:0,color:C.t3,fontSize:12}}>{scores.length} participants · Live scores{!rev?" hidden until admin reveals":""}</p>
+      </div>
+
+      {/* ── LOCKED STATE ── */}
+      {!rev&&(
+        <div style={{background:"linear-gradient(135deg,rgba(249,115,22,.07),rgba(249,115,22,.03))",border:"1px solid rgba(249,115,22,.2)",borderRadius:14,padding:"20px 24px",textAlign:"center",marginBottom:20}}>
+          <div style={{fontSize:32,marginBottom:8}}>🔒</div>
+          <div style={{fontWeight:800,fontSize:14,color:C.t2,marginBottom:4}}>Scores are hidden</div>
+          <div style={{color:C.t3,fontSize:12}}>The admin will reveal the leaderboard once playoffs begin.</div>
+        </div>
+      )}
+
+      {/* ── PODIUM (top 3) ── */}
+      {rev&&scores.length>=2&&(
+        <div style={{background:"linear-gradient(180deg,rgba(249,115,22,.06) 0%,transparent 100%)",border:"1px solid rgba(249,115,22,.12)",borderRadius:20,padding:"24px 16px 0",marginBottom:24,overflow:"hidden"}}>
+          <div style={{textAlign:"center",fontSize:10,fontWeight:800,color:C.acc,letterSpacing:"3px",textTransform:"uppercase",marginBottom:18}}>🏆 Leaderboard Podium</div>
+          <div style={{display:"flex",alignItems:"flex-end",justifyContent:"center",gap:12}}>
+            {podium.map((s,vi)=>{
+              const rr=pConfig[vi].rank-1;
+              const col=MEDAL_C[rr];
+              const glow=MEDAL_G[rr];
+              const isFirst=pConfig[vi].rank===1;
+              const h=pConfig[vi].h;
+              const sz=pConfig[vi].sz;
+              return(
+                <div key={s.id} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:0}}>
+                  {/* Info above platform */}
+                  <div style={{textAlign:"center",marginBottom:10,padding:"0 4px",maxWidth:110}}>
+                    <div style={{position:"relative",display:"inline-block"}}>
+                      <Avatar user={s} size={sz} idx={scores.indexOf(s)}/>
+                      <div style={{position:"absolute",bottom:-4,right:-4,fontSize:isFirst?18:14,filter:`drop-shadow(0 0 4px ${col})`}}>{MEDAL_E[rr]}</div>
+                    </div>
+                    <div style={{fontSize:isFirst?13:11,fontWeight:900,color:col,marginTop:8,lineHeight:1.2}}>{s.name}{s.id===myId?" 👤":""}</div>
+                    <div style={{fontSize:isFirst?26:20,fontWeight:900,color:col,lineHeight:1.1}}>{s.total}</div>
+                    <div style={{fontSize:9,color:C.t3,marginTop:1}}>pts</div>
+                  </div>
+                  {/* Platform block */}
+                  <div style={{
+                    width:isFirst?96:74,height:h,
+                    background:`linear-gradient(to bottom,${col}28,${col}06)`,
+                    border:`1.5px solid ${col}40`,
+                    borderRadius:"10px 10px 0 0",
+                    boxShadow:`0 -6px 30px ${glow},0 0 0 1px ${col}10`,
+                    display:"flex",alignItems:"center",justifyContent:"center",
+                  }}>
+                    <div style={{fontSize:isFirst?28:22,opacity:.5}}>{pConfig[vi].rank}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── FULL LEADERBOARD TABLE ── */}
+      {rev&&(
+        <div>
+          {/* Column headers — hidden on mobile (labels shown inline instead) */}
+          {!isMobile&&(
+            <div style={{display:"grid",gridTemplateColumns:"36px 38px 1fr 34px 34px 34px 34px 34px 34px 44px",alignItems:"center",padding:"6px 14px",marginBottom:5,fontSize:9,color:C.t3,fontWeight:800,textTransform:"uppercase",letterSpacing:"1px"}}>
+              <div>#</div><div/>
+              <div>Player</div>
+              <div style={{textAlign:"center"}}>⚡PI</div>
+              {ROUNDS.map(r=><div key={r.k} style={{textAlign:"center"}}>{r.s}</div>)}
+              <div style={{textAlign:"center"}}>🏆</div>
+              <div style={{textAlign:"right",color:C.acc}}>Total</div>
+            </div>
+          )}
+          <div style={{display:"flex",flexDirection:"column",gap:5}}>
+            {scores.map((s,i)=>{
+              const isMe=s.id===myId,isTop=i<3;
+              const col=isTop?MEDAL_C[i]:s.isAI?C.ai:PC[i%PC.length];
+              const mGlow=isTop?MEDAL_G[i]:"transparent";
+              const pi=piPts(s);
+              const r1=rPts(s,"r1"),r2=rPts(s,"r2"),r3=rPts(s,"r3"),rf=rPts(s,"finals");
+              const ch=s.bd?.champ?.p||0;
+              const pct=s.total/maxPts;
+              return(
+                <div key={s.id} style={{
+                  background:isMe?"rgba(249,115,22,.08)":isTop?`${MEDAL_C[i]}07`:C.bg2,
+                  border:`1px solid ${isMe?"rgba(249,115,22,.35)":isTop?MEDAL_C[i]+"25":C.bdL}`,
+                  borderLeft:`3px solid ${col}`,
+                  borderRadius:11,padding:"0 14px",overflow:"hidden",
+                  boxShadow:isMe?"0 0 24px rgba(249,115,22,.12)":isTop?`0 0 18px ${mGlow}`:"none",
+                }}>
+                  {/* Points progress bar */}
+                  <div style={{height:2,background:C.bg3,marginBottom:0,borderRadius:0}}>
+                    <div style={{height:"100%",width:`${pct*100}%`,background:`linear-gradient(90deg,${col},${col}88)`,borderRadius:1,transition:"width .6s"}}/>
+                  </div>
+                  {isMobile?(
+                    /* ── Mobile: two-line layout ── */
+                    <div style={{padding:"10px 0"}}>
+                      {/* Line 1: rank · avatar · full name · total */}
+                      <div style={{display:"flex",alignItems:"center",gap:9,marginBottom:6}}>
+                        <div style={{fontSize:isTop?15:12,fontWeight:900,textAlign:"center",color:isTop?col:C.t3,minWidth:26}}>{isTop?MEDAL_E[i]:`#${i+1}`}</div>
+                        <Avatar user={s} size={30} idx={i}/>
+                        <div style={{flex:1,fontWeight:800,fontSize:14,color:isMe?C.acc:isTop?col:C.t1,wordBreak:"break-word"}}>{s.name}{isMe?" 👤":""}{s.isAI?" 🤖":""}</div>
+                        <div style={{fontSize:isTop?20:16,fontWeight:900,color:col,lineHeight:1,whiteSpace:"nowrap"}}>{s.total||"—"}<span style={{fontSize:9,color:C.t3,fontWeight:600,marginLeft:2}}>pts</span></div>
+                      </div>
+                      {/* Line 2: per-round score chips */}
+                      <div style={{display:"flex",gap:5,flexWrap:"wrap",paddingLeft:35}}>
+                        {[["⚡",pi,"pi"],["R1",r1,"r"],["R2",r2,"r"],["R3",r3,"r"],["F",rf,"r"],["🏆",ch,"champ"]].map(([label,val,type])=>{
+                          const c=type==="champ"?(val>0?C.gold:C.t3):type==="pi"?(val>0?"#60a5fa":C.t3):(val>0?C.wn:C.t3);
+                          return(
+                            <div key={label} style={{display:"flex",alignItems:"center",gap:2,background:C.bg3,borderRadius:5,padding:"2px 6px"}}>
+                              <span style={{fontSize:9,color:C.t3,fontWeight:700}}>{label}</span>
+                              <span style={{fontSize:11,fontWeight:800,color:c}}>{val||"—"}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ):(
+                    /* ── Desktop: single-row grid ── */
+                    <div style={{display:"grid",gridTemplateColumns:"36px 38px 1fr 34px 34px 34px 34px 34px 34px 44px",alignItems:"center",padding:"11px 0"}}>
+                      <div style={{fontSize:isTop?15:12,fontWeight:900,textAlign:"center",color:isTop?col:C.t3}}>{isTop?MEDAL_E[i]:`#${i+1}`}</div>
+                      <Avatar user={s} size={32} idx={i}/>
+                      <div style={{minWidth:0,paddingRight:4}}>
+                        <div style={{fontWeight:800,fontSize:13,color:isMe?C.acc:isTop?col:C.t1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.name}{isMe?" 👤":""}{s.isAI?" 🤖":""}</div>
+                      </div>
+                      <ScoreCell v={pi} type="pi"/>
+                      <ScoreCell v={r1} type="r"/>
+                      <ScoreCell v={r2} type="r"/>
+                      <ScoreCell v={r3} type="r"/>
+                      <ScoreCell v={rf} type="r"/>
+                      <ScoreCell v={ch} type="champ"/>
+                      <div style={{textAlign:"right",fontSize:isTop?22:17,fontWeight:900,color:col,lineHeight:1}}>{s.total||"—"}</div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {/* Legend */}
+          <div style={{display:"flex",gap:10,flexWrap:"wrap",marginTop:14,padding:"10px 14px",background:C.bg2,borderRadius:10,border:`1px solid ${C.bdL}`}}>
+            <div style={{fontSize:9,color:C.t3,fontWeight:800,textTransform:"uppercase",letterSpacing:"1px",marginRight:6}}>Legend:</div>
+            <LegChip c="#60a5fa" l="⚡ Play-In"/><LegChip c={C.t2} l="R1 · R2 · R3 · F rounds"/><LegChip c={C.gold} l="🏆 Champion pick"/>
+          </div>
+        </div>
+      )}
+
+      {/* ── Locked list (no scores) ── */}
+      {!rev&&(
+        <div style={{display:"flex",flexDirection:"column",gap:5}}>
+          {scores.map((s,i)=>{
+            const isMe=s.id===myId;
+            const col=s.isAI?C.ai:PC[i%PC.length];
+            return(
+              <div key={s.id} style={{background:isMe?"rgba(249,115,22,.08)":C.bg2,border:`1px solid ${isMe?"rgba(249,115,22,.3)":C.bdL}`,borderLeft:`3px solid ${col}`,borderRadius:11,padding:"11px 14px",display:"flex",alignItems:"center",gap:11}}>
+                <div style={{fontSize:12,fontWeight:900,color:C.t3,minWidth:28,textAlign:"center"}}>#{i+1}</div>
+                <Avatar user={s} size={34} idx={i}/>
+                <div style={{fontWeight:800,fontSize:13,color:isMe?C.acc:C.t1,flex:1}}>{s.name}{isMe?" (you)":""}</div>
+                <div style={{fontSize:14,color:C.t3}}>—</div>
+              </div>
+            );
           })}
         </div>
-      </div>}
-      <div style={{display:"flex",flexDirection:"column",gap:7}}>
-        {scores.map((s,i)=>{
-          const isMe=s.id===myId, isTop=i<3;
-          const col=s.isAI?C.ai:PC[i%PC.length];
-          const mCol=isTop?medalC[i]:null;
-          return <div key={s.id} style={{background:isMe?"rgba(249,115,22,.07)":isTop?`${mCol}08`:C.bg2,border:`1px solid ${isMe?C.acc:isTop?mCol+"44":C.bdL}`,borderLeft:`4px solid ${isTop?mCol:col}`,borderRadius:11,padding:"11px 14px",display:"flex",alignItems:"center",gap:11,flexWrap:"wrap",boxShadow:isTop?`0 0 20px ${mCol}15`:"none"}}>
-            <div style={{fontSize:isTop?18:14,minWidth:28,textAlign:"center",fontWeight:900}}>{isTop?medalEmoji[i]:`#${i+1}`}</div>
-            <Avatar user={s} size={34} idx={i}/>
-            <div style={{flex:1,minWidth:80}}>
-              <div style={{fontWeight:800,fontSize:14,color:s.isAI?C.ai:isMe?C.acc:isTop?mCol:C.t1}}>{s.name}{isMe?" (you)":""}</div>
-              {rev&&<div style={{display:"flex",gap:4,marginTop:4,flexWrap:"wrap"}}>
-                <MiniPt l="⚡" v={piPts(s)}/>
-                {ROUNDS.map(r=><MiniPt key={r.k} l={r.s} v={rPts(s,r.k)}/>)}
-                <MiniPt l="🏆" v={s.bd?.champ?.p||0} gold/>
-                <MiniPt l="⭐" v={s.bd?.mvp?.p||0} ai/>
-              </div>}
-            </div>
-            <div style={{fontSize:isTop?24:18,fontWeight:900,color:isTop?mCol:col}}>{rev?s.total:"—"}</div>
-          </div>;
-        })}
-      </div>
+      )}
     </div>
   );
+}
+function ScoreCell({v,type}){
+  const c=type==="champ"?(v>0?C.gold:C.t3):type==="pi"?(v>0?"#60a5fa":C.t3):(v>0?C.wn:C.t3);
+  const bg=type==="champ"&&v>0?`${C.gold}12`:type==="pi"&&v>0?"rgba(96,165,250,.1)":v>0?`${C.wn}0a`:"transparent";
+  return <div style={{textAlign:"center"}}>
+    {v>0
+      ?<div style={{background:bg,borderRadius:5,padding:"2px 4px",fontSize:11,fontWeight:800,color:c,display:"inline-block",minWidth:22}}>{v}</div>
+      :<div style={{fontSize:10,color:C.t3,opacity:.4}}>—</div>
+    }
+  </div>;
+}
+function LegChip({c,l}){
+  return <div style={{fontSize:10,color:c,fontWeight:600}}>{l}</div>;
 }
 function MiniPt({l,v,gold,ai}){
   const c=gold?C.gold:ai?C.ai:C.t2;
@@ -1142,36 +1651,37 @@ function AllPicks({all,res,cfg}){
 }
 
 // ─── GAMES / SCHEDULE ────────────────────────────────────────────────────────
+// Sport5 broadcasts all NBA playoff games in Israel. Helper: Israel time (Asia/Jerusalem = UTC+2 winter / UTC+3 summer)
+const ilTime=dt=>new Date(dt).toLocaleTimeString('en',{timeZone:'Asia/Jerusalem',hour:'2-digit',minute:'2-digit',hour12:false});
+const ilDate=dt=>new Date(dt).toLocaleDateString('he-IL',{timeZone:'Asia/Jerusalem',weekday:'short',day:'numeric',month:'numeric'});
+
 function Games(){
   const [events,setEvents]=useState([]);
   const [loading,setLoading]=useState(true);
   const [tick,setTick]=useState(0);
+  const [subTab,setSubTab]=useState("schedule");// "schedule" | "results"
   useEffect(()=>{
     setLoading(true);
     fetchPlayoffGames().then(evts=>{setEvents(evts);setLoading(false);});
   },[tick]);
 
-  // Only keep games that have a series (playoff/play-in) — filters out regular season stragglers
-  const playoffEvents=events.filter(ev=>ev.competitions?.[0]?.series||ev.season?.type?.id==="3"||ev.season?.type===3);
+  // Keep only Play-In + Playoff games: use date >= April 14 (reliable, avoids season-type guessing)
+  const playoffEvents=events.filter(ev=>new Date(ev.date)>=PLAYOFF_START);
   const sorted=[...playoffEvents].sort((a,b)=>new Date(a.date)-new Date(b.date));
-  const past=sorted.filter(e=>e.competitions?.[0]?.status?.type?.completed);
+  const past=[...sorted].filter(e=>e.competitions?.[0]?.status?.type?.completed).reverse();
   const upcoming=sorted.filter(e=>!e.competitions?.[0]?.status?.type?.completed);
 
-  // Group upcoming games by date (day string)
   const dayKey=dt=>dt.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
   const isToday=dt=>{const t=new Date();return dt.toDateString()===t.toDateString();};
   const isTomorrow=dt=>{const t=new Date();t.setDate(t.getDate()+1);return dt.toDateString()===t.toDateString();};
   const dayLabel=dt=>isToday(dt)?"Today 🔥":isTomorrow(dt)?"Tomorrow":dayKey(dt);
 
   const grouped=upcoming.reduce((acc,ev)=>{
-    const dt=new Date(ev.date);
-    const label=dayLabel(dt);
-    if(!acc[label]) acc[label]=[];
-    acc[label].push(ev);
-    return acc;
+    const dt=new Date(ev.date);const label=dayLabel(dt);
+    if(!acc[label])acc[label]=[];acc[label].push(ev);return acc;
   },{});
 
-  const GCard=({ev,showDate=false})=>{
+  const GCard=({ev})=>{
     const comp=ev.competitions?.[0];if(!comp)return null;
     const cs=comp.competitors||[];
     const away=cs.find(c=>c.homeAway==="away")||cs[0];
@@ -1181,17 +1691,29 @@ function Games(){
     const live=!done&&comp.status?.type?.id!=="1";
     const dt=new Date(ev.date);
     const series=comp.series?.summary;
-    const awinscore=parseInt(away.score)||0;
-    const hwinscore=parseInt(home.score)||0;
+    const ilT=ilTime(ev.date);
+    const ilD=ilDate(ev.date);
+    const [showStats,setShowStats]=useState(false);
+    const [stats,setStats]=useState(null);
+    const [statsLoading,setStatsLoading]=useState(false);
+    const toggleStats=()=>{
+      if(!showStats&&!stats){
+        setStatsLoading(true);
+        fetchGameStats(ev.id).then(s=>{setStats(s);setStatsLoading(false);});
+      }
+      setShowStats(p=>!p);
+    };
     return(
-      <div style={{background:C.bg2,border:`1px solid ${live?C.er+"55":done?C.bdL:C.bdL}`,borderRadius:13,overflow:"hidden",boxShadow:live?"0 0 14px rgba(248,113,113,.15)":"none"}}>
-        {/* Series label bar */}
-        {series&&<div style={{background:C.bg3,borderBottom:`1px solid ${C.bdL}`,padding:"4px 12px",fontSize:10,color:C.t3,fontWeight:700,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <span>🏀 {series}</span>
-          {live&&<span style={{color:C.er,fontWeight:800,fontSize:10}}>🔴 LIVE · {comp.status?.displayClock}</span>}
-          {done&&<span style={{color:C.ok,fontWeight:700}}>FINAL</span>}
-          {!done&&!live&&<span style={{color:C.acc,fontWeight:700}}>{dt.toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit'})}</span>}
-        </div>}
+      <div style={{background:C.bg2,border:`1px solid ${live?C.er+"55":C.bdL}`,borderRadius:13,overflow:"hidden",boxShadow:live?"0 0 14px rgba(248,113,113,.15)":"none"}}>
+        {/* Top info bar */}
+        <div style={{background:C.bg3,borderBottom:`1px solid ${C.bdL}`,padding:"5px 12px",fontSize:10,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:4}}>
+          <span style={{color:C.t2,fontWeight:700}}>{series?"🏀 "+series:"🏀 Playoff"}</span>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            {!done&&!live&&<span style={{color:C.acc,fontWeight:800,fontSize:11}}>{ilT} 🇮🇱 <span style={{color:C.t3,fontWeight:600,fontSize:9}}>{ilD}</span></span>}
+            {live&&<span style={{color:C.er,fontWeight:800,fontSize:10}}>🔴 LIVE · {comp.status?.displayClock}</span>}
+            {done&&<span style={{color:C.ok,fontWeight:700}}>✓ FINAL</span>}
+          </div>
+        </div>
         <div style={{padding:"10px 14px",display:"flex",alignItems:"center",gap:10}}>
           {/* Away */}
           <div style={{flex:1,display:"flex",alignItems:"center",gap:8}}>
@@ -1200,16 +1722,16 @@ function Games(){
               <div style={{fontWeight:done&&away.winner?900:600,color:done&&away.winner?C.t1:C.t2,fontSize:13}}>{away.team?.displayName||away.team?.abbreviation}</div>
               <div style={{fontSize:10,color:C.t3}}>Away</div>
             </div>
-            {done&&<div style={{fontSize:22,fontWeight:900,color:away.winner?C.ok:C.t2,minWidth:28,textAlign:"right"}}>{away.score}</div>}
+            {(done||live)&&<div style={{fontSize:22,fontWeight:900,color:away.winner?C.ok:C.t2,minWidth:28,textAlign:"right"}}>{away.score}</div>}
           </div>
-          {/* Center divider */}
-          <div style={{textAlign:"center",padding:"0 6px",color:C.t3}}>
+          {/* Center */}
+          <div style={{textAlign:"center",padding:"0 6px",color:C.t3,minWidth:32}}>
             {!done&&!live&&<div>
-              <div style={{fontSize:11,fontWeight:800,color:C.acc}}>{dt.toLocaleDateString('en',{month:'short',day:'numeric'})}</div>
-              <div style={{fontSize:10,color:C.t3}}>vs</div>
+              <div style={{fontSize:10,fontWeight:800,color:C.t2}}>{dt.toLocaleDateString('en',{month:'short',day:'numeric'})}</div>
+              <div style={{fontSize:10,color:C.t3,marginTop:1}}>vs</div>
             </div>}
-            {live&&<div style={{color:C.er,fontWeight:900,fontSize:12}}>LIVE</div>}
-            {done&&<div style={{color:C.t3,fontSize:11}}>—</div>}
+            {live&&<div style={{color:C.er,fontWeight:900,fontSize:11}}>LIVE</div>}
+            {done&&<div style={{color:C.t3,fontSize:13}}>—</div>}
           </div>
           {/* Home */}
           <div style={{flex:1,display:"flex",alignItems:"center",gap:8,flexDirection:"row-reverse"}}>
@@ -1218,58 +1740,128 @@ function Games(){
               <div style={{fontWeight:done&&home.winner?900:600,color:done&&home.winner?C.t1:C.t2,fontSize:13}}>{home.team?.displayName||home.team?.abbreviation}</div>
               <div style={{fontSize:10,color:C.t3}}>Home</div>
             </div>
-            {done&&<div style={{fontSize:22,fontWeight:900,color:home.winner?C.ok:C.t2,minWidth:28,textAlign:"left"}}>{home.score}</div>}
+            {(done||live)&&<div style={{fontSize:22,fontWeight:900,color:home.winner?C.ok:C.t2,minWidth:28,textAlign:"left"}}>{home.score}</div>}
           </div>
         </div>
+        {/* Stats toggle for completed games */}
+        {done&&(
+          <div>
+            <button onClick={toggleStats} style={{width:"100%",background:"transparent",border:"none",borderTop:`1px solid ${C.bdL}`,padding:"6px",color:C.t3,fontSize:10,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
+              📊 {showStats?"Hide Stats":"Show Stats"} {statsLoading?"⏳":""}
+            </button>
+            {showStats&&(
+              <div style={{borderTop:`1px solid ${C.bdL}`,padding:"10px 14px",background:C.bg3}}>
+                {statsLoading&&<div style={{textAlign:"center",color:C.t3,fontSize:11,padding:8}}>Loading stats…</div>}
+                {!statsLoading&&stats&&(
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                    {[away,home].map((side,si)=>{
+                      const abbr=side.team?.abbreviation;
+                      const tl=stats.leaders?.find(l=>l.teamAbbr===abbr);
+                      const ts=stats.teams?.find(t=>t.teamAbbr===abbr);
+                      const fg=ts?.stats?.fieldGoalPct||ts?.stats?.fieldGoalsAttempted;
+                      const threePct=ts?.stats?.threePointFieldGoalPct;
+                      const reb=ts?.stats?.totalRebounds||ts?.stats?.rebounds;
+                      const ast=ts?.stats?.assists;
+                      const tov=ts?.stats?.turnovers;
+                      return(
+                        <div key={abbr} style={{textAlign:si===1?"right":"left"}}>
+                          <div style={{fontWeight:800,fontSize:11,color:C.t2,marginBottom:5,display:"flex",alignItems:"center",gap:4,flexDirection:si===1?"row-reverse":"row"}}>
+                            <Logo abbr={abbr} size={14}/>{T[abbr]?.a||abbr}
+                          </div>
+                          {tl?.pts&&<div style={{fontSize:11,color:C.t1,marginBottom:2}}>🏀 <b>{tl.pts.displayValue}</b> — {tl.pts.athlete?.displayName?.split(' ').pop()||"pts"}</div>}
+                          {tl?.reb&&<div style={{fontSize:10,color:C.t2,marginBottom:2}}>🔄 <b>{tl.reb.displayValue}</b> REB — {tl.reb.athlete?.displayName?.split(' ').pop()||""}</div>}
+                          {tl?.ast&&<div style={{fontSize:10,color:C.t2,marginBottom:4}}>🎯 <b>{tl.ast.displayValue}</b> AST — {tl.ast.athlete?.displayName?.split(' ').pop()||""}</div>}
+                          <div style={{fontSize:9,color:C.t3,display:"flex",gap:8,flexWrap:"wrap",flexDirection:si===1?"row-reverse":"row"}}>
+                            {fg&&<span>FG {fg}</span>}
+                            {threePct&&<span>3P {threePct}</span>}
+                            {reb&&<span>{reb} REB</span>}
+                            {ast&&<span>{ast} AST</span>}
+                            {tov&&<span>{tov} TOV</span>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {!statsLoading&&!stats&&<div style={{textAlign:"center",color:C.t3,fontSize:11}}>Stats unavailable for this game.</div>}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     );
   };
 
+  const tabSt=(k)=>({
+    padding:"7px 16px",borderRadius:20,fontWeight:700,fontSize:12,cursor:"pointer",border:"none",
+    background:subTab===k?C.acc:"transparent",color:subTab===k?"#fff":C.t2,transition:"all .15s"
+  });
+
   return(
     <div>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:8}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexWrap:"wrap",gap:8}}>
         <div>
           <h2 style={{margin:"0 0 2px",fontWeight:900,fontFamily:"Georgia,serif",fontSize:22}}>Playoff Schedule</h2>
-          <p style={{margin:0,color:C.t3,fontSize:12}}>Live scores & upcoming games via ESPN</p>
+          <p style={{margin:0,color:C.t3,fontSize:12}}>Live scores via ESPN · Game times shown in 🇮🇱 Israeli time</p>
         </div>
         <button onClick={()=>setTick(t=>t+1)} style={btn.g} disabled={loading}>{loading?"⏳ Loading…":"🔄 Refresh"}</button>
       </div>
+      {/* Sport5 broadcast note */}
+      <a href="https://www.sport5.co.il/" target="_blank" rel="noreferrer"
+        style={{display:"inline-flex",alignItems:"center",gap:6,background:"#0f2040",border:"1px solid #2563eb44",borderRadius:8,padding:"5px 12px",fontSize:11,color:"#93c5fd",fontWeight:700,textDecoration:"none",marginBottom:14}}>
+        📺 Check sport5.co.il for broadcast channels & times
+        <span style={{fontSize:9,color:"#60a5fa",opacity:.8}}>↗</span>
+      </a>
+
+      {/* Sub-tabs */}
+      <div style={{display:"flex",gap:4,background:C.bg2,borderRadius:22,padding:3,marginBottom:18,width:"fit-content"}}>
+        <button style={tabSt("schedule")} onClick={()=>setSubTab("schedule")}>📅 Schedule {upcoming.length>0?`(${upcoming.length})`:""}</button>
+        <button style={tabSt("results")} onClick={()=>setSubTab("results")}>📋 Results {past.length>0?`(${past.length})`:""}</button>
+      </div>
+
       {loading&&<div style={{textAlign:"center",color:C.t3,padding:40}}>🏀 Loading schedule…</div>}
 
-      {/* ── Upcoming: day-by-day scheduler ── */}
-      {!loading&&Object.keys(grouped).length>0&&(
-        <div style={{marginBottom:28}}>
-          <div style={{fontSize:10,fontWeight:800,color:C.acc,textTransform:"uppercase",letterSpacing:"2px",marginBottom:14}}>📅 Upcoming Games</div>
-          {Object.entries(grouped).map(([day,evs])=>(
-            <div key={day} style={{marginBottom:20}}>
-              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-                <div style={{fontSize:12,fontWeight:900,color:day.startsWith("Today")?"#f97316":day.startsWith("Tomorrow")?"#fbbf24":C.t2}}>{day}</div>
-                <div style={{flex:1,height:1,background:C.bdL}}/>
-                <div style={{fontSize:10,color:C.t3,fontWeight:700}}>{evs.length} game{evs.length>1?"s":""}</div>
-              </div>
-              <div style={{display:"flex",flexDirection:"column",gap:8}}>
-                {evs.map(ev=><GCard key={ev.id} ev={ev}/>)}
-              </div>
+      {/* ── Schedule tab ── */}
+      {!loading&&subTab==="schedule"&&(
+        <>
+          {Object.keys(grouped).length>0?(
+            <div>
+              {Object.entries(grouped).map(([day,evs])=>(
+                <div key={day} style={{marginBottom:20}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                    <div style={{fontSize:12,fontWeight:900,color:day.startsWith("Today")?"#f97316":day.startsWith("Tomorrow")?"#fbbf24":C.t2}}>{day}</div>
+                    <div style={{flex:1,height:1,background:C.bdL}}/>
+                    <div style={{fontSize:10,color:C.t3,fontWeight:700}}>{evs.length} game{evs.length>1?"s":""}</div>
+                  </div>
+                  <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                    {evs.map(ev=><GCard key={ev.id} ev={ev}/>)}
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          ):(
+            <div style={{textAlign:"center",color:C.t3,padding:40,background:C.bg2,borderRadius:14}}>
+              <div style={{fontSize:36,marginBottom:8}}>📅</div>
+              <div>No upcoming games found. Check back soon or hit Refresh.</div>
+            </div>
+          )}
+        </>
       )}
 
-      {/* ── Recent Results: playoff only ── */}
-      {!loading&&past.length>0&&(
-        <div>
-          <div style={{fontSize:10,fontWeight:800,color:C.t3,textTransform:"uppercase",letterSpacing:"2px",marginBottom:10}}>📋 Recent Results</div>
-          <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            {[...past].reverse().slice(0,15).map(ev=><GCard key={ev.id} ev={ev}/>)}
-          </div>
-        </div>
-      )}
-
-      {!loading&&playoffEvents.length===0&&(
-        <div style={{textAlign:"center",color:C.t3,padding:40,background:C.bg2,borderRadius:14}}>
-          <div style={{fontSize:36,marginBottom:8}}>📅</div>
-          <div>No playoff games found yet — check back soon.</div>
-        </div>
+      {/* ── Results tab ── */}
+      {!loading&&subTab==="results"&&(
+        <>
+          {past.length>0?(
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {past.slice(0,30).map(ev=><GCard key={ev.id} ev={ev}/>)}
+            </div>
+          ):(
+            <div style={{textAlign:"center",color:C.t3,padding:40,background:C.bg2,borderRadius:14}}>
+              <div style={{fontSize:36,marginBottom:8}}>📋</div>
+              <div>No completed games yet. Results will appear here after games finish.</div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -1283,8 +1875,8 @@ function NBASync({res,setPoR,setPiR}){
   const load=()=>{setLoading(true);fetchPlayoffGames().then(evts=>{setEvents(evts);setLoading(false);});};
   useEffect(()=>{load();},[]);
 
-  // All completed ESPN games
-  const completedEvts=events.filter(e=>e.competitions?.[0]?.status?.type?.completed);
+  // All completed playoff/play-in games (date-based filter)
+  const completedEvts=events.filter(e=>e.competitions?.[0]?.status?.type?.completed&&new Date(e.date)>=PLAYOFF_START);
 
   // Helper: find ESPN event by two team abbreviations
   const findGame=(t1,t2)=>completedEvts.find(ev=>{
