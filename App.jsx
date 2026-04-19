@@ -208,6 +208,17 @@ const MEDAL_E=["🥇","🥈","🥉"];
 const ESPN_SB='https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard';
 // Hardcoded playoff cutoff — Play-In starts April 14; any game on/after this is post-season
 const PLAYOFF_START=new Date('2026-04-14T00:00:00');
+// Calendar-based hard stop for the Play-In tournament. NBA's 2026 Play-In runs
+// April 14–17; by April 18 06:00 UTC (~02:00 ET) every Play-In game is done.
+// Used as a belt-and-suspenders lock so Play-In picks can't be edited even if
+// the ESPN feed is stale, missing, or returns a team pair we can't match.
+const PLAYIN_HARD_LOCK=new Date('2026-04-18T06:00:00Z');
+// Normalize ESPN-returned team abbreviations to our internal T keys. ESPN is
+// mostly consistent with standard NBA abbrs but a few teams come through with
+// a shorter code (e.g., "GS" instead of "GSW"). Add aliases here as needed —
+// identity passes through unchanged.
+const ESPN_ABBR_ALIAS={GS:"GSW",SA:"SAS",NO:"NOP",NY:"NYK",UTAH:"UTA",WSH:"WAS"};
+const normAbbr=a=>{if(!a)return a;const u=String(a).toUpperCase();return ESPN_ABBR_ALIAS[u]||u;};
 async function fetchPlayoffGames(){
   const today=new Date();
   // Always fetch from April 13 onward — never slide the window forward, otherwise
@@ -241,10 +252,12 @@ async function fetchSeriesScores(){
   const map={};
   done.forEach(ev=>{
     const cs=ev.competitions?.[0]?.competitors||[];if(cs.length<2)return;
-    const key=[cs[0].team?.abbreviation,cs[1].team?.abbreviation].sort().join('|');
+    const a=normAbbr(cs[0].team?.abbreviation), b=normAbbr(cs[1].team?.abbreviation);
+    if(!a||!b)return;
+    const key=[a,b].sort().join('|');
     if(!map[key])map[key]={wins:{},games:0};
     map[key].games++;
-    cs.forEach(c=>{if(c.winner)map[key].wins[c.team.abbreviation]=(map[key].wins[c.team.abbreviation]||0)+1;});
+    cs.forEach(c=>{const w=normAbbr(c.team?.abbreviation);if(c.winner&&w)map[key].wins[w]=(map[key].wins[w]||0)+1;});
   });
   return map;}
 // Build a map of sorted team-pair key → { startTime: ISO string, started: bool }
@@ -256,7 +269,7 @@ function buildSeriesStartMap(events){
   events.filter(ev=>new Date(ev.date)>=PLAYOFF_START).forEach(ev=>{
     const cs=ev.competitions?.[0]?.competitors||[];
     if(cs.length<2)return;
-    const a=cs[0].team?.abbreviation, b=cs[1].team?.abbreviation;
+    const a=normAbbr(cs[0].team?.abbreviation), b=normAbbr(cs[1].team?.abbreviation);
     if(!a||!b)return;
     const key=[a,b].sort().join('|');
     const date=new Date(ev.date);
@@ -641,7 +654,7 @@ function Main({me,all,res,cfg,bettingOpen,savePO,savePI,savePhoto,logout}){
         {tab==="teams"   &&<Teams res={res}/>}
         {tab==="rules"   &&<Rules/>}
         {tab==="prizes"  &&<Prizes cfg={cfg}/>}
-        {tab==="board"   &&<Board   scores={scores} myId={me.id} cfg={cfg}/>}
+        {tab==="board"   &&<Board   scores={scores} myId={me.id} cfg={cfg} res={res}/>}
         {tab==="profile" &&<Profile me={me} onSavePhoto={savePhoto}/>}
         {tab==="all"     &&<AllPicks all={all} res={res} cfg={cfg}/>}
       </main>
@@ -691,17 +704,58 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
 
   // Returns true if this series' first game has already started (or global betting is closed).
   // The per-game deadline is derived from the ESPN schedule (info.startTime).
+  // MULTI-SOURCE: Because ESPN may return stale data, a team pair we can't match,
+  // or a different abbreviation than we expect (e.g., GS vs GSW), we don't rely
+  // solely on the schedule map. We also treat the series as locked if:
+  //   (a) admin already entered a result for this series, OR
+  //   (b) the series' round is earlier than the currently-open round (round
+  //       progression: previous rounds can't be edited), OR
+  //   (c) any sibling series in the same round already has a result (means
+  //       the round is in progress, so any unstarted matchup is either
+  //       already over or imminent — don't leave it editable).
   const isSeriesLocked=(s)=>{
     if(!activeBettingOpen)return true;
-    // Hard fallback: if admin already entered a result, the series is definitely over
+    // (a) Hard fallback: if admin already entered a result, the series is definitely over
     if(res.po?.[s.id]?.w)return true;
     const ra=resolveTeam(s.t1,res), rb=resolveTeam(s.t2,res);
-    if(!ra||!rb||!T[ra]||!T[rb])return false;
-    const info=seriesStartMap[[ra,rb].sort().join('|')];
-    if(!info)return false;
-    // Compare the live clock (new Date()) against the specific game's start time
-    return info.started||new Date()>=new Date(info.startTime);
+    // ESPN-schedule-based lock
+    if(ra&&rb&&T[ra]&&T[rb]){
+      const info=seriesStartMap[[ra,rb].sort().join('|')];
+      if(info&&(info.started||new Date()>=new Date(info.startTime)))return true;
+    }
+    // (b) Round progression fallback: any series in a round earlier than the
+    //     currently-open round must already be locked, regardless of ESPN data.
+    const roundIdx=ROUND_KEYS.indexOf(s.r);
+    if(roundIdx>=0&&roundIdx<openIdx)return true;
+    // (c) Sibling-result fallback: if any series in the same round already has
+    //     a result, the round is underway — lock the rest to avoid edits after
+    //     first game of the round tips off.
+    if(SERIES.filter(x=>x.r===s.r).some(x=>res.po?.[x.id]?.w))return true;
+    return false;
   };
+
+  // NBA Champion pick locks as soon as the playoffs actually begin — once any
+  // Round-1 game has started, predicting the champion would be cheating. This
+  // mirrors the sibling-result logic in isSeriesLocked but is scoped to R1:
+  //   (a) betting globally closed, OR
+  //   (b) admin already entered a final champ result, OR
+  //   (c) the currently-open round is past R1 (progression), OR
+  //   (d) any R1 series already has a result, OR
+  //   (e) any R1 series has an ESPN tipoff in the past.
+  const isChampLocked=(()=>{
+    if(!activeBettingOpen)return true;
+    if(res.champ)return true;
+    if(openIdx>0)return true;
+    if(SERIES.filter(s=>s.r==="r1").some(s=>res.po?.[s.id]?.w))return true;
+    const now=new Date();
+    for(const s of SERIES.filter(s=>s.r==="r1")){
+      const ra=resolveTeam(s.t1,res), rb=resolveTeam(s.t2,res);
+      if(!ra||!rb||!T[ra]||!T[rb])continue;
+      const info=seriesStartMap[[ra,rb].sort().join('|')];
+      if(info&&(info.started||now>=new Date(info.startTime)))return true;
+    }
+    return false;
+  })();
 
   // Split series by conference for current round
   const allRoundSeries=SERIES.filter(s=>s.r===activeR);
@@ -747,8 +801,17 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
     }
     // Mirror the payload back into the local draft so the UI stays truthful
     setDraft(payload);
+    // Champion pick also honors its own lock — if it's locked, we must write
+    // whatever the server already has (not what the local state holds), so
+    // a stale draft in another tab can't overwrite a pick after the playoffs
+    // started. When unlocked, we write the current in-state champ.
+    const champToSave=isChampLocked?(me.champ||null):(champ||null);
+    if(isChampLocked&&champ&&champ!==(me.champ||"")){
+      // Revert UI so the user sees the authoritative (locked) pick
+      setChamp(me.champ||"");
+    }
     try{
-      await onSave(me.id,payload,champ||null,mvp||null);
+      await onSave(me.id,payload,champToSave,mvp||null);
     }catch(err){
       console.error('❌ Picks save error:',err);
       setSaveErr(prev=>prev||`Save failed: ${err?.message||err}`);
@@ -852,6 +915,7 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
           <div style={{fontSize:32,marginBottom:4}}>🏆</div>
           <div style={{fontWeight:900,fontSize:17}}>NBA Champion Pick</div>
           <div style={{color:C.t3,fontSize:12,marginTop:2}}>+10 pts · pick the team that lifts the trophy</div>
+          {isChampLocked&&<div style={{marginTop:10,display:"inline-flex",alignItems:"center",gap:6,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.25)",borderRadius:8,padding:"5px 12px",fontSize:11,color:C.er,fontWeight:700}}>🔒 Champion pick is locked — playoffs have started</div>}
           {champ&&<div style={{marginTop:10,display:"inline-flex",alignItems:"center",gap:8,background:C.aD,border:`1px solid ${C.acc}`,borderRadius:10,padding:"7px 14px"}}>
             <Logo abbr={champ} size={28}/><span style={{color:C.acc,fontWeight:900,fontSize:14}}>🏆 {T[champ]?.n}</span>
           </div>}
@@ -862,10 +926,11 @@ function Picks({me,res,cfg,onSave,bettingOpen,finalsOpen,getRoundDeadline,roundB
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(72px,1fr))",gap:6}}>
               {abbrs.map(abbr=>{
                 const sel=champ===abbr;
-                return <button key={abbr} onClick={()=>setChamp(sel?"":abbr)}
+                return <button key={abbr} disabled={isChampLocked} onClick={isChampLocked?undefined:()=>setChamp(sel?"":abbr)}
                   style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,padding:"10px 6px",
                     border:`2px solid ${sel?C.acc:C.bd}`,borderRadius:10,
-                    background:sel?C.aD:C.bg2,cursor:"pointer",
+                    background:sel?C.aD:C.bg2,cursor:isChampLocked?"not-allowed":"pointer",
+                    opacity:isChampLocked&&!sel?0.5:1,
                     boxShadow:sel?`0 0 12px rgba(249,115,22,.3)`:"none"}}>
                   <Logo abbr={abbr} size={32}/>
                   <div style={{fontSize:9,fontWeight:sel?900:600,color:sel?C.acc:C.t3,textAlign:"center",lineHeight:1.1}}>{T[abbr]?.a}</div>
@@ -953,16 +1018,33 @@ function Playin({me,res,cfg,onSave,bettingOpen,piDeadline,roundBettingOpen}){
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[me.pi]);
 
-  // A play-in game is locked once its specific game has started (or global betting is closed)
+  // A play-in game is locked once its specific game has started (or global betting is closed).
+  // MULTI-SOURCE: ESPN data may be stale, missing, or return unexpected team
+  // abbreviations. We also lock the game when:
+  //   (a) admin entered a result for it, OR
+  //   (b) the calendar-based hard lock has passed (PLAYIN_HARD_LOCK — after
+  //       the Play-In tournament is definitively over), OR
+  //   (c) the playoffs have started (any Round 1 result exists) — Play-In is
+  //       over by then.
   const isGameLocked=(m)=>{
     if(!piBettingOpen)return true;
-    if(!m.teams[0]||!m.teams[1])return false;
-    // Hard fallback: admin already entered a result → game is definitely over
+    // Missing teams on a loser-game that hasn't resolved yet → keep it open
+    // for UI, but if calendar already passed, even that is locked.
+    if(!m.teams[0]||!m.teams[1]){
+      if(new Date()>=PLAYIN_HARD_LOCK)return true;
+      return false;
+    }
+    // (a) Hard fallback: admin already entered a result → game is definitely over
     if(res.pi?.[m.id]?.w)return true;
+    // (b) Calendar-based hard stop — the entire Play-In window is closed.
+    if(new Date()>=PLAYIN_HARD_LOCK)return true;
+    // (c) Round-progression fallback: if any Round-1 series has a result, the
+    //     playoffs are underway and the Play-In is unambiguously over.
+    if(Object.values(res.po||{}).some(v=>v?.w))return true;
+    // ESPN schedule lookup (primary signal)
     const info=piStartMap[[...m.teams].sort().join('|')];
-    if(!info)return false;
-    // Per-game deadline: once the specific start time is reached, lock this game.
-    return info.started||new Date()>=new Date(info.startTime);
+    if(info&&(info.started||new Date()>=new Date(info.startTime)))return true;
+    return false;
   };
 
   // Save flow: re-check each game's lock status at the moment of save against
@@ -1353,8 +1435,15 @@ function Prizes({cfg}){
 }
 
 // ─── BOARD ───────────────────────────────────────────────────────────────────
-function Board({scores,myId,cfg}){
-  const rev=cfg.rPo||cfg.rPi;
+function Board({scores,myId,cfg,res}){
+  // Auto-reveal the leaderboard as soon as any real result is present (Play-In
+  // or Playoff), regardless of the admin reveal toggles. Rationale: once games
+  // have results, scores stop being hypothetical — hiding them here while
+  // scoreUser() is already computing them created the "standings not updating"
+  // bug where totals recalculated but were never displayed. The admin toggles
+  // still force-reveal before results exist (useful for pre-game preview).
+  const hasResults=(res&&(Object.keys(res.pi||{}).length>0||Object.keys(res.po||{}).length>0||res.champ||res.mvp))||false;
+  const rev=cfg.rPo||cfg.rPi||hasResults;
   const rPts=(u,r)=>SERIES.filter(s=>s.r===r).reduce((sum,s)=>sum+(u.bd?.[s.id]?.p||0),0);
   const piPts=(u)=>PLAYIN.reduce((sum,m)=>sum+(u.bd?.[m.id]?.p||0),0);
   // Podium order: 2nd left, 1st center, 3rd right
@@ -1885,16 +1974,16 @@ function NBASync({res,setPoR,setPiR}){
   // All completed playoff/play-in games (date-based filter)
   const completedEvts=events.filter(e=>e.competitions?.[0]?.status?.type?.completed&&new Date(e.date)>=PLAYOFF_START);
 
-  // Helper: find ESPN event by two team abbreviations
+  // Helper: find ESPN event by two team abbreviations (normalized)
   const findGame=(t1,t2)=>completedEvts.find(ev=>{
     const cs=ev.competitions?.[0]?.competitors||[];
-    const abbrs=cs.map(c=>c.team?.abbreviation);
+    const abbrs=cs.map(c=>normAbbr(c.team?.abbreviation));
     return abbrs.includes(t1)&&abbrs.includes(t2);
   });
   const gameWinner=(ev)=>{
     if(!ev)return null;
     const cs=ev.competitions?.[0]?.competitors||[];
-    return cs.find(c=>c.winner)?.team?.abbreviation||null;
+    return normAbbr(cs.find(c=>c.winner)?.team?.abbreviation)||null;
   };
 
   // ── PLAY-IN matches ──────────────────────────────────────────────────────
