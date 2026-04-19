@@ -371,7 +371,7 @@ export default function App(){
   const [users,setUsers]     =useState([]);
   const [res,setRes]         =useState({po:{},pi:{},champ:null,mvp:null});
   const [cfg,setCfgRaw]      =useState({
-    rPi:false, rPo:false, rPiPicks:false, openR:"r1",
+    rPi:false, rPo:false, rPiPicks:false, rMvp:false, openR:"r1",
     deadline:null, adminPw:null,
     leagueName:"NBA Playoffs 2026",
   });
@@ -1750,8 +1750,8 @@ function AllPicks({all,res,cfg}){
               })}
             </div>
           </div>
-          {/* Finals MVP column */}
-          <div style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:13,overflow:"hidden"}}>
+          {/* Finals MVP column — gated by admin toggle cfg.rMvp */}
+          {cfg.rMvp&&<div style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:13,overflow:"hidden"}}>
             <div style={{background:"rgba(56,189,248,.07)",padding:"10px 14px",borderBottom:`1px solid ${C.bdL}`,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
               <div style={{fontWeight:800,fontSize:13}}>⭐ Finals MVP <span style={{color:C.t3,fontSize:11,fontWeight:600}}>(+8)</span></div>
               {res.mvp?<span style={{color:C.ok,fontWeight:700,fontSize:11}}>✓ {MVPS.find(m=>m.id===res.mvp)?.n||res.mvp}</span>:<span style={{color:C.t3,fontSize:11}}>Not decided</span>}
@@ -1777,7 +1777,7 @@ function AllPicks({all,res,cfg}){
                 </div>;
               })}
             </div>
-          </div>
+          </div>}
         </div>
       </div>}
     </div>
@@ -2042,11 +2042,14 @@ function NBASync({res,setPoR,setPiR}){
     const comp=ev.competitions?.[0];
     const cs=comp.competitors||[];if(cs.length<2)return;
     const [c1,c2]=cs;
-    const key=[c1.team?.abbreviation,c2.team?.abbreviation].sort().join('|');
+    const a1=normAbbr(c1.team?.abbreviation);
+    const a2=normAbbr(c2.team?.abbreviation);
+    if(!a1||!a2)return;
+    const key=[a1,a2].sort().join('|');
     if(!seriesMap[key])seriesMap[key]={wins:{},total:0};
     seriesMap[key].total++;
-    if(c1.winner)seriesMap[key].wins[c1.team.abbreviation]=(seriesMap[key].wins[c1.team.abbreviation]||0)+1;
-    if(c2.winner)seriesMap[key].wins[c2.team.abbreviation]=(seriesMap[key].wins[c2.team.abbreviation]||0)+1;
+    if(c1.winner)seriesMap[key].wins[a1]=(seriesMap[key].wins[a1]||0)+1;
+    if(c2.winner)seriesMap[key].wins[a2]=(seriesMap[key].wins[a2]||0)+1;
   });
   const poMatches=SERIES.map(s=>{
     const t1=T[s.t1]?s.t1:null,t2=T[s.t2]?s.t2:null;
@@ -2216,6 +2219,7 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
           <button onClick={()=>setCfg(p=>({...p,rPi:!p.rPi}))} style={cfg.rPi?btn.s:btn.w}>{cfg.rPi?"⚡ Scores On":"⚡ Show Scores"}</button>
           <button onClick={()=>setCfg(p=>({...p,rPiPicks:!p.rPiPicks}))} style={cfg.rPiPicks?btn.s:btn.w}>{cfg.rPiPicks?"👀 PI Picks Shown":"👀 Show PI Picks"}</button>
           <button onClick={()=>setCfg(p=>({...p,rPo:!p.rPo}))} style={cfg.rPo?btn.s:btn.w}>{cfg.rPo?"🔓 Playoffs Shown":"🔒 Show Playoffs"}</button>
+          <button onClick={()=>setCfg(p=>({...p,rMvp:!p.rMvp}))} style={cfg.rMvp?btn.s:btn.w}>{cfg.rMvp?"⭐ MVP Shown":"⭐ Show MVP"}</button>
           <button onClick={logout} style={btn.g}>← Exit</button>
         </div>
       </header>
