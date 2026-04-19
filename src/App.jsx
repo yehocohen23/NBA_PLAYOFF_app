@@ -148,27 +148,28 @@ function scoreUser(u,res,cfg){
   const po=u.isAI?u.po:u.po||{};
   const pi=u.isAI?u.pi:u.pi||{};
   let total=0; const bd={};
-  if(cfg.rPi){
-    for(const m of PLAYIN){
-      const real=res.pi?.[m.id]; const pred=pi[m.id]||{};
-      const s=!real?.w||!pred?.w?{p:0,t:"pending"}:pred.w===real.w?{p:3,t:"exact"}:{p:1,t:"wrong"};
-      bd[m.id]=s; total+=s.p;
-    }
+  // Scoring is ALWAYS driven by `res`. The rPi/rPo reveal toggles used to gate
+  // this calculation, which caused totals to stay at 0 even after the admin
+  // entered results. Each individual game only contributes once its result is
+  // present in `res` (pending otherwise), so scores update live as results
+  // come in regardless of reveal toggle state.
+  for(const m of PLAYIN){
+    const real=res.pi?.[m.id]; const pred=pi[m.id]||{};
+    const s=!real?.w||!pred?.w?{p:0,t:"pending"}:pred.w===real.w?{p:3,t:"exact"}:{p:1,t:"wrong"};
+    bd[m.id]=s; total+=s.p;
   }
-  if(cfg.rPo){
-    for(const s of SERIES){
-      const pts=ROUNDS.find(r=>r.k===s.r).pts;
-      const rawPred=po[s.id];
-      // Resolve placeholder team IDs (E7/E8/W7/W8) so picks match actual results
-      const resolvedPred=rawPred?.w
-        ?{...rawPred,w:resolveTeam(rawPred.w,res)||rawPred.w}
-        :rawPred;
-      const sc=scoreS(resolvedPred,res.po?.[s.id],pts);
-      bd[s.id]=sc; total+=sc.p;
-    }
-    if(res.champ){const p=(u.isAI?u.champ:u.champ)===res.champ?10:0;bd.champ={p,t:p?"exact":"wrong"};total+=p;}
-    if(res.mvp){const mv=u.isAI?u.mvp:u.mvp;const p=mv===res.mvp?8:0;bd.mvp={p,t:p?"exact":"wrong"};total+=p;}
+  for(const s of SERIES){
+    const pts=ROUNDS.find(r=>r.k===s.r).pts;
+    const rawPred=po[s.id];
+    // Resolve placeholder team IDs (E7/E8/W7/W8) so picks match actual results
+    const resolvedPred=rawPred?.w
+      ?{...rawPred,w:resolveTeam(rawPred.w,res)||rawPred.w}
+      :rawPred;
+    const sc=scoreS(resolvedPred,res.po?.[s.id],pts);
+    bd[s.id]=sc; total+=sc.p;
   }
+  if(res.champ){const p=(u.isAI?u.champ:u.champ)===res.champ?10:0;bd.champ={p,t:p?"exact":"wrong"};total+=p;}
+  if(res.mvp){const mv=u.isAI?u.mvp:u.mvp;const p=mv===res.mvp?8:0;bd.mvp={p,t:p?"exact":"wrong"};total+=p;}
   return {total,bd};
 }
 
@@ -209,8 +210,10 @@ const ESPN_SB='https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scor
 const PLAYOFF_START=new Date('2026-04-14T00:00:00');
 async function fetchPlayoffGames(){
   const today=new Date();
-  // Never look back before April 13 (avoids regular season bleed-in)
-  const startMs=Math.max(new Date('2026-04-13').getTime(),today.getTime()-3*86400000);
+  // Always fetch from April 13 onward — never slide the window forward, otherwise
+  // games older than a few days drop out of the lookup and stop locking. The
+  // start date doubles as a regular-season cutoff (Play-In begins April 14).
+  const startMs=new Date('2026-04-13').getTime();
   const s=new Date(startMs);
   const e=new Date(today);e.setDate(today.getDate()+21);
   const fmt=d=>`${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
@@ -580,7 +583,7 @@ function Main({me,all,res,cfg,bettingOpen,savePO,savePI,savePhoto,logout}){
     {k:"prizes",i:"🎁",l:"Prizes"},
     {k:"board",i:"🏅",l:"Standings"},
     {k:"profile",i:"👤",l:"Profile"},
-    ...((cfg.rPo||cfg.rPiPicks)?[{k:"all",i:"👀",l:"All Picks"}]:[]),
+    ...((cfg.rPo||cfg.rPiPicks||cfg.rPi)?[{k:"all",i:"👀",l:"All Picks"}]:[]),
   ];
   return(
     <div style={{minHeight:"100vh",background:C.bg0,color:C.t1,fontFamily:"'DM Sans','Segoe UI',sans-serif"}}>
@@ -1590,17 +1593,21 @@ function Profile({me,onSavePhoto}){
 
 // ─── ALL PICKS ────────────────────────────────────────────────────────────────
 function AllPicks({all,res,cfg}){
-  const [view,setView]=useState(cfg.rPiPicks?"playin":cfg.rPo?"playoff":"playin");
+  // Reveal Play-In picks whenever either the PI reveal toggle OR the scores toggle is on,
+  // so enabling just "Show Scores" surfaces everyone's Play-In picks too.
+  const showPlayin=cfg.rPiPicks||cfg.rPi;
+  const showPlayoff=cfg.rPo;
+  const [view,setView]=useState(showPlayin?"playin":showPlayoff?"playoff":"playin");
   const [rnd,setRnd]=useState("r1");
   return(
     <div>
       <h2 style={{margin:"0 0 6px",fontWeight:900,fontFamily:"Georgia,serif",fontSize:22}}>All Predictions</h2>
       <p style={{margin:"0 0 16px",color:C.t3,fontSize:13}}>Revealed now that playoffs have started!</p>
       <div style={{display:"flex",gap:6,marginBottom:16,flexWrap:"wrap"}}>
-        {cfg.rPiPicks&&<button onClick={()=>setView("playin")} style={view==="playin"?btn.a:btn.g}>⚡ Play-In</button>}
-        {cfg.rPo&&<button onClick={()=>setView("playoff")} style={view==="playoff"?btn.a:btn.g}>🏀 Playoffs</button>}
+        {showPlayin&&<button onClick={()=>setView("playin")} style={view==="playin"?btn.a:btn.g}>⚡ Play-In</button>}
+        {showPlayoff&&<button onClick={()=>setView("playoff")} style={view==="playoff"?btn.a:btn.g}>🏀 Playoffs</button>}
       </div>
-      {view==="playin"&&PLAYIN.filter(m=>m.teams[0]&&m.teams[1]).map(m=>{
+      {view==="playin"&&PLAYIN.map(m=>resolvePlayinMatch(m,res)).filter(m=>m.teams[0]&&m.teams[1]).map(m=>{
         const real=res.pi?.[m.id];
         return <div key={m.id} style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:11,marginBottom:9,overflow:"hidden"}}>
           <div style={{background:C.bg3,padding:"9px 13px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
