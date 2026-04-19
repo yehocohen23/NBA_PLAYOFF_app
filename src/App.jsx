@@ -1987,10 +1987,15 @@ function NBASync({res,setPoR,setPiR}){
   };
 
   // ── PLAY-IN matches ──────────────────────────────────────────────────────
-  const piMatches=PLAYIN.filter(m=>m.teams[0]&&m.teams[1]&&T[m.teams[0]]&&T[m.teams[1]]).map(m=>{
-    const ev=findGame(m.teams[0],m.teams[1]);
-    return {m,ev,winner:gameWinner(ev)};
-  });
+  // Resolve loser games (pi_elo/pi_wlo) first — their raw teams array is ["",""]
+  // and only becomes real once the #7-vs-#8 and #9-vs-#10 games have winners.
+  // Without this, the loser-game results were silently skipped by ESPN auto-sync.
+  const piMatches=PLAYIN.map(m=>resolvePlayinMatch(m,res))
+    .filter(m=>m.teams[0]&&m.teams[1]&&T[m.teams[0]]&&T[m.teams[1]])
+    .map(m=>{
+      const ev=findGame(m.teams[0],m.teams[1]);
+      return {m,ev,winner:gameWinner(ev)};
+    });
 
   // ── PLAYOFF SERIES matches ───────────────────────────────────────────────
   // Build series win map
@@ -2203,7 +2208,10 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
         {tab==="playin"&&<div>
           <h3 style={{fontWeight:900,marginBottom:14}}>Play-In Results</h3>
           <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            {PLAYIN.filter(m=>m.teams[0]&&m.teams[1]).map(m=>{
+            {/* Resolve loser games (pi_elo/pi_wlo) BEFORE filtering — their raw
+                teams array is ["",""] and would otherwise be hidden from the
+                admin UI, making it impossible to enter the 8th-seed results. */}
+            {PLAYIN.map(m=>resolvePlayinMatch(m,res)).filter(m=>m.teams[0]&&m.teams[1]).map(m=>{
               const real=res.pi?.[m.id];
               return <div key={m.id} style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:10,padding:"11px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:9}}>
                 <div><div style={{fontSize:9,color:C.t3}}>{m.conf}</div><div style={{fontWeight:700,fontSize:13}}>{m.label}</div>{real?.w&&<div style={{color:C.ok,fontSize:11,marginTop:2}}>✓ {T[real.w]?.n||real.w}</div>}</div>
@@ -2274,7 +2282,7 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
                 <Avatar user={u} size={38} idx={i}/>
                 <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14}}>{u.name}</div><div style={{color:C.t3,fontSize:11}}>{u.email}</div></div>
                 <div style={{textAlign:"right",fontSize:11,color:C.t2}}>
-                  <div>Playoffs: {pf}/{SERIES.length}</div><div>Play-In: {pif}/{PLAYIN.filter(m=>m.teams[0]).length}</div>
+                  <div>Playoffs: {pf}/{SERIES.length}</div><div>Play-In: {pif}/{PLAYIN.length}</div>
                   {u.champ&&<div style={{color:C.acc}}>🏆 {T[u.champ]?.a}</div>}
                   {u.mvp&&<div style={{color:C.ai}}>⭐ {MVPS.find(m=>m.id===u.mvp)?.n?.split(" ")[0]}</div>}
                 </div>
@@ -2380,6 +2388,7 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
     </div>
   );
 }
+
 
 function Section({title,children}){
   return <div style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:14,padding:18,marginBottom:14}}>
