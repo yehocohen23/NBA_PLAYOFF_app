@@ -88,14 +88,40 @@ const SERIES=[
 const LABELS={E8:"E #8",E7:"E #7",W8:"W #8",W7:"W #7",E1W:"E1/E8 W",E4W:"E4/E5 W",E2W:"E2/E7 W",E3W:"E3/E6 W",W1W:"W1/W8 W",W4W:"W4/W5 W",W2W:"W2/W7 W",W3W:"W3/W6 W",ES1:"E Semi W1",ES2:"E Semi W2",WS1:"W Semi W1",WS2:"W Semi W2",ECF:"East Champ",WCF:"West Champ"};
 const sn=(k)=>T[k]?.n||LABELS[k]||k;
 
-// Resolve Play-In placeholder seeds (E7/E8/W7/W8) to actual team abbrs
+// Resolve placeholder seeds to actual team abbrs.
+// Handles three layers:
+//   • Play-In:    E7/E8/W7/W8           → res.pi.<gid>.w
+//   • Round 1→2:  E1W/E2W/E3W/E4W/W1W…  → res.po.r1_*.w
+//   • Round 2→3:  ES1/ES2/WS1/WS2       → res.po.r2_*.w
+//   • Round 3→F:  ECF/WCF               → res.po.r3_*.w
+// Once each round's results are entered into res, downstream rounds inherit
+// real team abbreviations automatically (no more "E #7" / "E1/E8 W" labels).
 function resolveTeam(abbr,res){
   if(T[abbr]) return abbr;
   const pi=res?.pi||{};
+  const po=res?.po||{};
+  // Play-In placeholders → actual #7/#8 seeds
   if(abbr==='E7') return pi.pi_e78?.w||null;
   if(abbr==='E8') return pi.pi_elo?.w||null;
   if(abbr==='W7') return pi.pi_w78?.w||null;
   if(abbr==='W8') return pi.pi_wlo?.w||null;
+  // Round-1 winner placeholders → R1 series winners (for R2 matchups)
+  if(abbr==='E1W') return po.r1_e1?.w||null; // E1/E8 winner
+  if(abbr==='E4W') return po.r1_e4?.w||null; // E4/E5 winner
+  if(abbr==='E2W') return po.r1_e2?.w||null; // E2/E7 winner
+  if(abbr==='E3W') return po.r1_e3?.w||null; // E3/E6 winner
+  if(abbr==='W1W') return po.r1_w1?.w||null;
+  if(abbr==='W4W') return po.r1_w4?.w||null;
+  if(abbr==='W2W') return po.r1_w2?.w||null;
+  if(abbr==='W3W') return po.r1_w3?.w||null;
+  // Round-2 (Conf Semi) winner placeholders → R2 series winners (for R3 matchups)
+  if(abbr==='ES1') return po.r2_e1?.w||null;
+  if(abbr==='ES2') return po.r2_e2?.w||null;
+  if(abbr==='WS1') return po.r2_w1?.w||null;
+  if(abbr==='WS2') return po.r2_w2?.w||null;
+  // Conference Champ placeholders → R3 series winners (for Finals matchup)
+  if(abbr==='ECF') return po.r3_e?.w||null;
+  if(abbr==='WCF') return po.r3_w?.w||null;
   return null;
 }
 
@@ -371,9 +397,8 @@ export default function App(){
   const [users,setUsers]     =useState([]);
   const [res,setRes]         =useState({po:{},pi:{},champ:null,mvp:null});
   const [cfg,setCfgRaw]      =useState({
-    rPi:false, rPo:false, rPiPicks:false, openR:"r1",
+    rPi:false, rPo:false, rPiPicks:false, rMvp:false, openR:"r1",
     deadline:null, adminPw:null,
-    prizes:{p1:"TBD by admin",p2:"TBD by admin",p3:"TBD by admin"},
     leagueName:"NBA Playoffs 2026",
   });
   const [sess,setSess]       =useState(()=>ld("n26s",null));
@@ -593,7 +618,6 @@ function Main({me,all,res,cfg,bettingOpen,savePO,savePI,savePhoto,logout}){
     {k:"games",i:"📅",l:"Games"},
     {k:"teams",i:"📊",l:"Teams"},
     {k:"rules",i:"📋",l:"Rules"},
-    {k:"prizes",i:"🎁",l:"Prizes"},
     {k:"board",i:"🏅",l:"Standings"},
     {k:"profile",i:"👤",l:"Profile"},
     ...((cfg.rPo||cfg.rPiPicks||cfg.rPi)?[{k:"all",i:"👀",l:"All Picks"}]:[]),
@@ -653,7 +677,6 @@ function Main({me,all,res,cfg,bettingOpen,savePO,savePI,savePhoto,logout}){
         {tab==="games"   &&<Games/>}
         {tab==="teams"   &&<Teams res={res}/>}
         {tab==="rules"   &&<Rules/>}
-        {tab==="prizes"  &&<Prizes cfg={cfg}/>}
         {tab==="board"   &&<Board   scores={scores} myId={me.id} cfg={cfg} res={res}/>}
         {tab==="profile" &&<Profile me={me} onSavePhoto={savePhoto}/>}
         {tab==="all"     &&<AllPicks all={all} res={res} cfg={cfg}/>}
@@ -1412,28 +1435,6 @@ function Rules(){
   );
 }
 
-// ─── PRIZES ──────────────────────────────────────────────────────────────────
-function Prizes({cfg}){
-  const ps=[{r:1,m:"🥇",t:"Champion",c:C.gold},{r:2,m:"🥈",t:"Runner-Up",c:C.silver},{r:3,m:"🥉",t:"Third Place",c:C.bronze}];
-  return(
-    <div>
-      <div style={{textAlign:"center",marginBottom:28}}><div style={{fontSize:44,marginBottom:8}}>🏆</div><h2 style={{margin:"0 0 4px",fontWeight:900,fontFamily:"Georgia,serif",fontSize:26}}>Prizes</h2><p style={{margin:0,color:C.t3,fontSize:13}}>Top 3 finishers take home the glory.</p></div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:14,marginBottom:28}}>
-        {ps.map(p=><div key={p.r} style={{background:`${p.c}10`,border:`1px solid ${p.c}44`,borderRadius:18,padding:22,textAlign:"center"}}>
-          <div style={{fontSize:44,marginBottom:8}}>{p.m}</div>
-          <div style={{fontWeight:900,fontSize:20,color:p.c,marginBottom:4}}>{p.t}</div>
-          <div style={{fontSize:11,color:C.t3,marginBottom:14}}>#{p.r} place</div>
-          <div style={{background:C.bg1,border:`1px solid ${p.c}44`,borderRadius:10,padding:"12px 14px"}}><div style={{fontSize:9,color:C.t3,textTransform:"uppercase",letterSpacing:"1px",marginBottom:3}}>Prize</div><div style={{fontWeight:800,fontSize:16,color:p.c}}>{cfg.prizes?.[`p${p.r}`]||"TBD by Admin"}</div></div>
-        </div>)}
-      </div>
-      <div style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:14,padding:18}}>
-        <div style={{fontWeight:800,fontSize:14,marginBottom:10}}>💡 Tips to Win</div>
-        {["🎯 Exact series scores are worth double — always pick a game count","⚡ Never skip Play-In picks — easy 3 pts","🏆 Champion bonus (+10) can flip entire standings at the end","⭐ Finals MVP (+8) is usually the best player on the winning team","📅 Later rounds pay more — stay engaged all the way","🤖 Claude AI is competing too — can you outsmart it?"].map(t=><div key={t} style={{background:C.bg3,borderRadius:7,padding:"7px 11px",marginBottom:5,fontSize:12,color:C.t2}}>{t}</div>)}
-      </div>
-    </div>
-  );
-}
-
 // ─── BOARD ───────────────────────────────────────────────────────────────────
 function Board({scores,myId,cfg,res}){
   // Auto-reveal the leaderboard as soon as any real result is present (Play-In
@@ -1686,7 +1687,10 @@ function AllPicks({all,res,cfg}){
   // so enabling just "Show Scores" surfaces everyone's Play-In picks too.
   const showPlayin=cfg.rPiPicks||cfg.rPi;
   const showPlayoff=cfg.rPo;
-  const [view,setView]=useState(showPlayin?"playin":showPlayoff?"playoff":"playin");
+  // Bonuses (Champion + Finals MVP) are revealed whenever the All Picks tab itself is visible,
+  // since the AllPicks tab only mounts when at least one reveal toggle is on.
+  const showBonuses=cfg.rPo||cfg.rPiPicks||cfg.rPi;
+  const [view,setView]=useState(showPlayin?"playin":showPlayoff?"playoff":"bonuses");
   const [rnd,setRnd]=useState("r1");
   return(
     <div>
@@ -1695,6 +1699,7 @@ function AllPicks({all,res,cfg}){
       <div style={{display:"flex",gap:6,marginBottom:16,flexWrap:"wrap"}}>
         {showPlayin&&<button onClick={()=>setView("playin")} style={view==="playin"?btn.a:btn.g}>⚡ Play-In</button>}
         {showPlayoff&&<button onClick={()=>setView("playoff")} style={view==="playoff"?btn.a:btn.g}>🏀 Playoffs</button>}
+        {showBonuses&&<button onClick={()=>setView("bonuses")} style={view==="bonuses"?btn.a:btn.g}>🏆 Champion & MVP</button>}
       </div>
       {view==="playin"&&PLAYIN.map(m=>resolvePlayinMatch(m,res)).filter(m=>m.teams[0]&&m.teams[1]).map(m=>{
         const real=res.pi?.[m.id];
@@ -1723,24 +1728,92 @@ function AllPicks({all,res,cfg}){
         </div>
         {SERIES.filter(s=>s.r===rnd).map(s=>{
           const real=res.po?.[s.id]; const rpts=ROUNDS.find(r=>r.k===s.r).pts;
+          // Resolve placeholder seeds (E8, E1W, ECF, ...) to real team abbrs so
+          // the matchup header shows actual team logos/names rather than slot
+          // labels like "E #8" or "E1/E8 W". Falls back to the placeholder when
+          // upstream results aren't entered yet.
+          const t1r=resolveTeam(s.t1,res)||s.t1;
+          const t2r=resolveTeam(s.t2,res)||s.t2;
           return <div key={s.id} style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:11,marginBottom:9,overflow:"hidden"}}>
             <div style={{background:C.bg3,padding:"9px 13px",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-              <Logo abbr={s.t1} size={24}/><span style={{fontWeight:700,fontSize:13,flex:1}}>{sn(s.t1)} vs {sn(s.t2)}</span><Logo abbr={s.t2} size={24}/>
-              {real?.w?<span style={{color:C.ok,fontWeight:700,fontSize:11}}>✓ {sn(real.w)} in {real.g}</span>:<span style={{color:C.t3,fontSize:11}}>Not played</span>}
+              <Logo abbr={t1r} size={24}/><span style={{fontWeight:700,fontSize:13,flex:1}}>{sn(t1r)} vs {sn(t2r)}</span><Logo abbr={t2r} size={24}/>
+              {real?.w?<span style={{color:C.ok,fontWeight:700,fontSize:11}}>✓ {sn(resolveTeam(real.w,res)||real.w)} in {real.g}</span>:<span style={{color:C.t3,fontSize:11}}>Not played</span>}
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:7,padding:9}}>
               {all.map((u,pi)=>{
                 const preds=u.isAI?u.po:u.po||{}; const pred=preds[s.id];
-                const sc=scoreS(pred,real,rpts); const bg=BG[sc.t];
+                // Resolve the predicted winner so it matches against the real
+                // result (e.g. user picked "E8" pre-Play-In → resolves to ORL).
+                const resolvedPred=pred?.w?{...pred,w:resolveTeam(pred.w,res)||pred.w}:pred;
+                const sc=scoreS(resolvedPred,real,rpts); const bg=BG[sc.t];
                 return <div key={u.id} style={{background:bg.bg,border:`1px solid ${bg.c}`,borderRadius:9,padding:"8px 10px"}}>
                   <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}><Avatar user={u} size={18} idx={pi}/><div style={{fontSize:10,fontWeight:800,color:pcol(u,pi)}}>{u.name}</div></div>
-                  <div style={{fontSize:11,color:C.t2,marginBottom:2}}>{pred?.w?<><strong>{sn(pred.w)}</strong> in {pred.g}</>:<span style={{color:C.t3}}>—</span>}</div>
+                  <div style={{fontSize:11,color:C.t2,marginBottom:2}}>{pred?.w?<><strong>{sn(resolveTeam(pred.w,res)||pred.w)}</strong> in {pred.g}</>:<span style={{color:C.t3}}>—</span>}</div>
                   <div style={{fontWeight:900,fontSize:13,color:bg.c}}>{sc.t==="pending"?"—":`+${sc.p}`}</div>
                 </div>;
               })}
             </div>
           </div>;
         })}
+      </div>}
+      {view==="bonuses"&&<div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:14}}>
+          {/* Champion column */}
+          <div style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:13,overflow:"hidden"}}>
+            <div style={{background:"rgba(249,115,22,.07)",padding:"10px 14px",borderBottom:`1px solid ${C.bdL}`,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
+              <div style={{fontWeight:800,fontSize:13}}>🏆 NBA Champion <span style={{color:C.t3,fontSize:11,fontWeight:600}}>(+10)</span></div>
+              {res.champ?<span style={{color:C.ok,fontWeight:700,fontSize:11}}>✓ {T[res.champ]?.n||res.champ}</span>:<span style={{color:C.t3,fontSize:11}}>Not decided</span>}
+            </div>
+            <div style={{padding:10,display:"flex",flexDirection:"column",gap:6}}>
+              {all.map((u,pi)=>{
+                const ch=u.champ;
+                const ok=res.champ&&ch&&ch===res.champ;
+                const bg=!res.champ||!ch?BG.pending:ok?BG.exact:BG.wrong;
+                return <div key={u.id} style={{background:bg.bg,border:`1px solid ${bg.c}`,borderRadius:9,padding:"8px 10px",display:"flex",alignItems:"center",gap:8}}>
+                  <Avatar user={u} size={22} idx={pi}/>
+                  <div style={{flex:1,fontSize:12,fontWeight:800,color:pcol(u,pi)}}>{u.name}</div>
+                  {ch?(
+                    <div style={{display:"flex",alignItems:"center",gap:5}}>
+                      <Logo abbr={ch} size={18}/>
+                      <span style={{fontSize:12,color:C.t2,fontWeight:700}}>{T[ch]?.a||ch}</span>
+                    </div>
+                  ):<span style={{fontSize:11,color:C.t3}}>— no pick —</span>}
+                  <span style={{fontWeight:900,fontSize:13,color:bg.c,minWidth:34,textAlign:"right"}}>
+                    {!res.champ||!ch?"—":ok?"+10":"0"}
+                  </span>
+                </div>;
+              })}
+            </div>
+          </div>
+          {/* Finals MVP column — gated by admin toggle cfg.rMvp */}
+          {cfg.rMvp&&<div style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:13,overflow:"hidden"}}>
+            <div style={{background:"rgba(56,189,248,.07)",padding:"10px 14px",borderBottom:`1px solid ${C.bdL}`,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
+              <div style={{fontWeight:800,fontSize:13}}>⭐ Finals MVP <span style={{color:C.t3,fontSize:11,fontWeight:600}}>(+8)</span></div>
+              {res.mvp?<span style={{color:C.ok,fontWeight:700,fontSize:11}}>✓ {MVPS.find(m=>m.id===res.mvp)?.n||res.mvp}</span>:<span style={{color:C.t3,fontSize:11}}>Not decided</span>}
+            </div>
+            <div style={{padding:10,display:"flex",flexDirection:"column",gap:6}}>
+              {all.map((u,pi)=>{
+                const mv=u.mvp;
+                const mvpObj=MVPS.find(m=>m.id===mv);
+                const ok=res.mvp&&mv&&mv===res.mvp;
+                const bg=!res.mvp||!mv?BG.pending:ok?BG.exact:BG.wrong;
+                return <div key={u.id} style={{background:bg.bg,border:`1px solid ${bg.c}`,borderRadius:9,padding:"8px 10px",display:"flex",alignItems:"center",gap:8}}>
+                  <Avatar user={u} size={22} idx={pi}/>
+                  <div style={{flex:1,fontSize:12,fontWeight:800,color:pcol(u,pi)}}>{u.name}</div>
+                  {mvpObj?(
+                    <div style={{display:"flex",alignItems:"center",gap:5,minWidth:0}}>
+                      <Logo abbr={mvpObj.t} size={18}/>
+                      <span style={{fontSize:11,color:C.t2,fontWeight:700,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{mvpObj.n}</span>
+                    </div>
+                  ):<span style={{fontSize:11,color:C.t3}}>— no pick —</span>}
+                  <span style={{fontWeight:900,fontSize:13,color:bg.c,minWidth:30,textAlign:"right"}}>
+                    {!res.mvp||!mv?"—":ok?"+8":"0"}
+                  </span>
+                </div>;
+              })}
+            </div>
+          </div>}
+        </div>
       </div>}
     </div>
   );
@@ -1987,10 +2060,15 @@ function NBASync({res,setPoR,setPiR}){
   };
 
   // ── PLAY-IN matches ──────────────────────────────────────────────────────
-  const piMatches=PLAYIN.filter(m=>m.teams[0]&&m.teams[1]&&T[m.teams[0]]&&T[m.teams[1]]).map(m=>{
-    const ev=findGame(m.teams[0],m.teams[1]);
-    return {m,ev,winner:gameWinner(ev)};
-  });
+  // Resolve loser games (pi_elo/pi_wlo) first — their raw teams array is ["",""]
+  // and only becomes real once the #7-vs-#8 and #9-vs-#10 games have winners.
+  // Without this, the loser-game results were silently skipped by ESPN auto-sync.
+  const piMatches=PLAYIN.map(m=>resolvePlayinMatch(m,res))
+    .filter(m=>m.teams[0]&&m.teams[1]&&T[m.teams[0]]&&T[m.teams[1]])
+    .map(m=>{
+      const ev=findGame(m.teams[0],m.teams[1]);
+      return {m,ev,winner:gameWinner(ev)};
+    });
 
   // ── PLAYOFF SERIES matches ───────────────────────────────────────────────
   // Build series win map
@@ -1999,18 +2077,26 @@ function NBASync({res,setPoR,setPiR}){
     const comp=ev.competitions?.[0];
     const cs=comp.competitors||[];if(cs.length<2)return;
     const [c1,c2]=cs;
-    const key=[c1.team?.abbreviation,c2.team?.abbreviation].sort().join('|');
+    const a1=normAbbr(c1.team?.abbreviation);
+    const a2=normAbbr(c2.team?.abbreviation);
+    if(!a1||!a2)return;
+    const key=[a1,a2].sort().join('|');
     if(!seriesMap[key])seriesMap[key]={wins:{},total:0};
     seriesMap[key].total++;
-    if(c1.winner)seriesMap[key].wins[c1.team.abbreviation]=(seriesMap[key].wins[c1.team.abbreviation]||0)+1;
-    if(c2.winner)seriesMap[key].wins[c2.team.abbreviation]=(seriesMap[key].wins[c2.team.abbreviation]||0)+1;
+    if(c1.winner)seriesMap[key].wins[a1]=(seriesMap[key].wins[a1]||0)+1;
+    if(c2.winner)seriesMap[key].wins[a2]=(seriesMap[key].wins[a2]||0)+1;
   });
+  // Resolve placeholders for R2/R3/Finals so Auto-Sync covers all rounds — not
+  // just R1. As soon as upstream results are entered (R1 → R2, R2 → R3, R3 →
+  // Finals), the corresponding placeholder resolves to a real team and that
+  // matchup becomes syncable. Series whose teams aren't decided yet are skipped.
   const poMatches=SERIES.map(s=>{
-    const t1=T[s.t1]?s.t1:null,t2=T[s.t2]?s.t2:null;
-    if(!t1||!t2)return null;
+    const t1=T[s.t1]?s.t1:resolveTeam(s.t1,res);
+    const t2=T[s.t2]?s.t2:resolveTeam(s.t2,res);
+    if(!t1||!t2||!T[t1]||!T[t2])return null;
     const key=[t1,t2].sort().join('|');
     const data=seriesMap[key];
-    return data?{s,data}:null;
+    return data?{s,t1,t2,data}:null;
   }).filter(Boolean);
 
   const totalFound=piMatches.filter(p=>p.ev).length+poMatches.length;
@@ -2069,24 +2155,27 @@ function NBASync({res,setPoR,setPiR}){
         <div>
           <div style={{fontSize:10,fontWeight:800,color:C.t3,textTransform:"uppercase",letterSpacing:"1.5px",marginBottom:8}}>🏀 Playoff Series</div>
           <div style={{display:"flex",flexDirection:"column",gap:7}}>
-            {poMatches.map(({s,data})=>{
+            {poMatches.map(({s,t1,t2,data})=>{
               const wins=data.wins;
-              const w1=wins[s.t1]||0,w2=wins[s.t2]||0;
-              const winner=w1>=4?s.t1:w2>=4?s.t2:null;
+              // Look up wins by the RESOLVED abbreviation, since seriesMap is
+              // keyed off ESPN's real team abbrs (e.g. DET, OKC) — not slot
+              // placeholders like "E1W" we use in the SERIES table.
+              const w1=wins[t1]||0,w2=wins[t2]||0;
+              const winner=w1>=4?t1:w2>=4?t2:null;
               const totalGames=w1+w2;
               const current=res.po?.[s.id];
               const isApplied=applied[s.id]||current?.w===winner;
               return(
                 <div key={s.id} style={{background:C.bg2,border:`1px solid ${winner?C.ok+"44":C.bdL}`,borderRadius:11,padding:"11px 14px",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                  <Logo abbr={s.t1} size={24}/>
+                  <Logo abbr={t1} size={24}/>
                   <div style={{flex:1}}>
-                    <div style={{fontWeight:700,fontSize:13}}>{sn(s.t1)} vs {sn(s.t2)}</div>
+                    <div style={{fontWeight:700,fontSize:13}}>{sn(t1)} vs {sn(t2)}</div>
                     <div style={{fontSize:11,color:C.t3,marginTop:1}}>
-                      {T[s.t1]?.a}: {w1} · {T[s.t2]?.a}: {w2}
+                      {T[t1]?.a}: {w1} · {T[t2]?.a}: {w2}
                       {current?.w&&<span style={{color:C.ok,marginLeft:8}}>· App: {T[current.w]?.a} in {current.g}</span>}
                     </div>
                   </div>
-                  <Logo abbr={s.t2} size={24}/>
+                  <Logo abbr={t2} size={24}/>
                   {winner?(
                     <button onClick={()=>{setPoR(s.id,winner,totalGames);setApplied(p=>({...p,[s.id]:true}));}}
                       style={{...isApplied?btn.g:btn.s,fontSize:11,padding:"6px 12px"}} disabled={isApplied}>
@@ -2141,7 +2230,6 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
     setChampIn(res.champ||"");
     setMvpIn(res.mvp||"");
   },[cfg,res]);
-  const [prizes,setPrizes]=useState({p1:cfg.prizes?.p1||"",p2:cfg.prizes?.p2||"",p3:cfg.prizes?.p3||""});
   const [settingsSaved,setSettingsSaved]=useState(false);
 
   const openIdx=ROUND_KEYS.indexOf(cfg.openR||"r1");
@@ -2155,7 +2243,6 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
       deadline:deadlines.r1?new Date(deadlines.r1).toISOString():null, // backward compat
       deadlines:parsedDeadlines,
       leagueName:leagueName.trim()||"NBA Playoffs 2026",
-      prizes:{p1:prizes.p1||"TBD",p2:prizes.p2||"TBD",p3:prizes.p3||"TBD"},
     }));
     setSettingsSaved(true); setTimeout(()=>setSettingsSaved(false),2500);
   };
@@ -2175,6 +2262,7 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
           <button onClick={()=>setCfg(p=>({...p,rPi:!p.rPi}))} style={cfg.rPi?btn.s:btn.w}>{cfg.rPi?"⚡ Scores On":"⚡ Show Scores"}</button>
           <button onClick={()=>setCfg(p=>({...p,rPiPicks:!p.rPiPicks}))} style={cfg.rPiPicks?btn.s:btn.w}>{cfg.rPiPicks?"👀 PI Picks Shown":"👀 Show PI Picks"}</button>
           <button onClick={()=>setCfg(p=>({...p,rPo:!p.rPo}))} style={cfg.rPo?btn.s:btn.w}>{cfg.rPo?"🔓 Playoffs Shown":"🔒 Show Playoffs"}</button>
+          <button onClick={()=>setCfg(p=>({...p,rMvp:!p.rMvp}))} style={cfg.rMvp?btn.s:btn.w}>{cfg.rMvp?"⭐ MVP Shown":"⭐ Show MVP"}</button>
           <button onClick={logout} style={btn.g}>← Exit</button>
         </div>
       </header>
@@ -2187,6 +2275,7 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
 
         {tab==="rounds"&&<div>
           <h3 style={{fontWeight:900,marginBottom:16}}>Round Unlock Control</h3>
+          <p style={{color:C.t3,fontSize:12,margin:"0 0 14px"}}>Unlock the next round when its picks should open. You can re-lock the current round to hide picks again (e.g. roll Semifinals back to Round 1).</p>
           <div style={{display:"flex",flexDirection:"column",gap:9}}>
             {ROUNDS.map((r,i)=>{
               const isOpen=i<=openIdx, isCur=i===openIdx;
@@ -2195,6 +2284,7 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
                 <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14}}>{r.l}</div><div style={{fontSize:11,color:C.t3}}>Pts: {r.pts.exact} / {r.pts.correct} / {r.pts.wrong}</div></div>
                 {isCur&&<span style={{background:C.aD,color:C.acc,fontSize:11,fontWeight:800,padding:"2px 8px",borderRadius:5}}>CURRENT</span>}
                 {!isOpen&&i===openIdx+1&&<button onClick={()=>setCfg(p=>({...p,openR:r.k}))} style={{...btn.p,fontSize:12,padding:"7px 14px"}}>Unlock</button>}
+                {isCur&&i>0&&<button onClick={()=>{if(confirm(`Re-lock ${r.l}? Picks for this round will be hidden again. Existing picks are preserved.`))setCfg(p=>({...p,openR:ROUND_KEYS[i-1]}));}} style={{...btn.danger,fontSize:12,padding:"7px 14px"}}>🔒 Lock</button>}
               </div>;
             })}
           </div>
@@ -2203,7 +2293,10 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
         {tab==="playin"&&<div>
           <h3 style={{fontWeight:900,marginBottom:14}}>Play-In Results</h3>
           <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            {PLAYIN.filter(m=>m.teams[0]&&m.teams[1]).map(m=>{
+            {/* Resolve loser games (pi_elo/pi_wlo) BEFORE filtering — their raw
+                teams array is ["",""] and would otherwise be hidden from the
+                admin UI, making it impossible to enter the 8th-seed results. */}
+            {PLAYIN.map(m=>resolvePlayinMatch(m,res)).filter(m=>m.teams[0]&&m.teams[1]).map(m=>{
               const real=res.pi?.[m.id];
               return <div key={m.id} style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:10,padding:"11px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:9}}>
                 <div><div style={{fontSize:9,color:C.t3}}>{m.conf}</div><div style={{fontWeight:700,fontSize:13}}>{m.label}</div>{real?.w&&<div style={{color:C.ok,fontSize:11,marginTop:2}}>✓ {T[real.w]?.n||real.w}</div>}</div>
@@ -2223,11 +2316,15 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(270px,1fr))",gap:7}}>
                 {SERIES.filter(s=>s.r===r.k).map(s=>{
                   const real=res.po?.[s.id];
+                  // Resolve placeholders so the admin sees real team logos/names
+                  // for R2/R3/Finals once the upstream results are entered.
+                  const t1r=resolveTeam(s.t1,res)||s.t1;
+                  const t2r=resolveTeam(s.t2,res)||s.t2;
                   return <div key={s.id} style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:9,padding:"9px 13px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:7,flexWrap:"wrap"}}>
                     <div style={{flex:1}}>
-                      <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}><Logo abbr={s.t1} size={18}/><span style={{fontSize:11,color:C.t3}}>vs</span><Logo abbr={s.t2} size={18}/></div>
-                      <div style={{fontWeight:600,fontSize:12}}>{sn(s.t1)} vs {sn(s.t2)}</div>
-                      {real?.w&&<div style={{color:C.ok,fontSize:10,marginTop:1}}>✓ {sn(real.w)} in {real.g}</div>}
+                      <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}><Logo abbr={t1r} size={18}/><span style={{fontSize:11,color:C.t3}}>vs</span><Logo abbr={t2r} size={18}/></div>
+                      <div style={{fontWeight:600,fontSize:12}}>{sn(t1r)} vs {sn(t2r)}</div>
+                      {real?.w&&<div style={{color:C.ok,fontSize:10,marginTop:1}}>✓ {sn(resolveTeam(real.w,res)||real.w)} in {real.g}</div>}
                     </div>
                     <button onClick={()=>{setEditSid(s.id);setEw(real?.w||"");setEg(real?.g?.toString()||"");}} style={btn.g}>Edit</button>
                   </div>;
@@ -2274,7 +2371,7 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
                 <Avatar user={u} size={38} idx={i}/>
                 <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14}}>{u.name}</div><div style={{color:C.t3,fontSize:11}}>{u.email}</div></div>
                 <div style={{textAlign:"right",fontSize:11,color:C.t2}}>
-                  <div>Playoffs: {pf}/{SERIES.length}</div><div>Play-In: {pif}/{PLAYIN.filter(m=>m.teams[0]).length}</div>
+                  <div>Playoffs: {pf}/{SERIES.length}</div><div>Play-In: {pif}/{PLAYIN.length}</div>
                   {u.champ&&<div style={{color:C.acc}}>🏆 {T[u.champ]?.a}</div>}
                   {u.mvp&&<div style={{color:C.ai}}>⭐ {MVPS.find(m=>m.id===u.mvp)?.n?.split(" ")[0]}</div>}
                 </div>
@@ -2327,16 +2424,6 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
               </div>
             ))}
           </Section>
-          <Section title="🎁 Prize Descriptions">
-            <p style={{color:C.t3,fontSize:12,margin:"0 0 10px"}}>These appear on the Prizes page for all users.</p>
-            {[["p1","🥇 1st Place"],["p2","🥈 2nd Place"],["p3","🥉 3rd Place"]].map(([k,label])=>(
-              <div key={k} style={{marginBottom:10}}>
-                <div style={{fontSize:11,color:C.t3,marginBottom:4,fontWeight:700}}>{label}</div>
-                <input value={prizes[k]} onChange={e=>setPrizes(p=>({...p,[k]:e.target.value}))}
-                  style={{...inp,marginBottom:0}} placeholder={`Prize for ${label}...`}/>
-              </div>
-            ))}
-          </Section>
           <button onClick={saveSettings} style={{...btn.p,marginBottom:12}}>
             {settingsSaved?"✓ Settings Saved!":"Save Settings"}
           </button>
@@ -2356,14 +2443,19 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
       </main>
 
       {/* Edit Modal */}
-      {editSid&&editS&&<div style={{position:"fixed",inset:0,background:"#000c",display:"flex",alignItems:"center",justifyContent:"center",zIndex:200,padding:16}} onClick={()=>setEditSid(null)}>
+      {editSid&&editS&&(()=>{
+        // Resolve placeholders so the modal shows real team names/logos and
+        // stores the resolved abbreviation as the winner (not "E1W"/"WCF").
+        const eT1=resolveTeam(editS.t1,res)||editS.t1;
+        const eT2=resolveTeam(editS.t2,res)||editS.t2;
+        return <div style={{position:"fixed",inset:0,background:"#000c",display:"flex",alignItems:"center",justifyContent:"center",zIndex:200,padding:16}} onClick={()=>setEditSid(null)}>
         <div style={{background:C.bg1,border:`1px solid ${C.bd}`,borderRadius:18,padding:26,maxWidth:320,width:"100%"}} onClick={e=>e.stopPropagation()}>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}><Logo abbr={editS.t1} size={26}/><span style={{color:C.t3,fontSize:12}}>vs</span><Logo abbr={editS.t2} size={26}/></div>
-          <h3 style={{margin:"6px 0 16px",fontWeight:900,fontSize:15}}>{sn(editS.t1)} vs {sn(editS.t2)}</h3>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}><Logo abbr={eT1} size={26}/><span style={{color:C.t3,fontSize:12}}>vs</span><Logo abbr={eT2} size={26}/></div>
+          <h3 style={{margin:"6px 0 16px",fontWeight:900,fontSize:15}}>{sn(eT1)} vs {sn(eT2)}</h3>
           <div style={{fontSize:10,color:C.t3,fontWeight:800,textTransform:"uppercase",letterSpacing:"1px",marginBottom:5}}>Winner</div>
           <select value={ew} onChange={e=>setEw(e.target.value)} style={{...sel,width:"100%",marginBottom:12,display:"block"}}>
             <option value="">— not played —</option>
-            {[editS.t1,editS.t2].map(k=><option key={k} value={k}>{sn(k)}</option>)}
+            {[eT1,eT2].filter(k=>T[k]).map(k=><option key={k} value={k}>{sn(k)}</option>)}
           </select>
           <div style={{fontSize:10,color:C.t3,fontWeight:800,textTransform:"uppercase",letterSpacing:"1px",marginBottom:5}}>Total Games</div>
           <select value={eg} onChange={e=>setEg(e.target.value)} style={{...sel,width:"100%",marginBottom:18,display:"block"}}>
@@ -2376,10 +2468,12 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
             <button onClick={()=>setEditSid(null)} style={{...btn.g,flex:1}}>Cancel</button>
           </div>
         </div>
-      </div>}
+      </div>;
+      })()}
     </div>
   );
 }
+
 
 function Section({title,children}){
   return <div style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:14,padding:18,marginBottom:14}}>
