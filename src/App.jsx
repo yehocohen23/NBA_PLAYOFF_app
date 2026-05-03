@@ -88,14 +88,40 @@ const SERIES=[
 const LABELS={E8:"E #8",E7:"E #7",W8:"W #8",W7:"W #7",E1W:"E1/E8 W",E4W:"E4/E5 W",E2W:"E2/E7 W",E3W:"E3/E6 W",W1W:"W1/W8 W",W4W:"W4/W5 W",W2W:"W2/W7 W",W3W:"W3/W6 W",ES1:"E Semi W1",ES2:"E Semi W2",WS1:"W Semi W1",WS2:"W Semi W2",ECF:"East Champ",WCF:"West Champ"};
 const sn=(k)=>T[k]?.n||LABELS[k]||k;
 
-// Resolve Play-In placeholder seeds (E7/E8/W7/W8) to actual team abbrs
+// Resolve placeholder seeds to actual team abbrs.
+// Handles three layers:
+//   • Play-In:    E7/E8/W7/W8           → res.pi.<gid>.w
+//   • Round 1→2:  E1W/E2W/E3W/E4W/W1W…  → res.po.r1_*.w
+//   • Round 2→3:  ES1/ES2/WS1/WS2       → res.po.r2_*.w
+//   • Round 3→F:  ECF/WCF               → res.po.r3_*.w
+// Once each round's results are entered into res, downstream rounds inherit
+// real team abbreviations automatically (no more "E #7" / "E1/E8 W" labels).
 function resolveTeam(abbr,res){
   if(T[abbr]) return abbr;
   const pi=res?.pi||{};
+  const po=res?.po||{};
+  // Play-In placeholders → actual #7/#8 seeds
   if(abbr==='E7') return pi.pi_e78?.w||null;
   if(abbr==='E8') return pi.pi_elo?.w||null;
   if(abbr==='W7') return pi.pi_w78?.w||null;
   if(abbr==='W8') return pi.pi_wlo?.w||null;
+  // Round-1 winner placeholders → R1 series winners (for R2 matchups)
+  if(abbr==='E1W') return po.r1_e1?.w||null; // E1/E8 winner
+  if(abbr==='E4W') return po.r1_e4?.w||null; // E4/E5 winner
+  if(abbr==='E2W') return po.r1_e2?.w||null; // E2/E7 winner
+  if(abbr==='E3W') return po.r1_e3?.w||null; // E3/E6 winner
+  if(abbr==='W1W') return po.r1_w1?.w||null;
+  if(abbr==='W4W') return po.r1_w4?.w||null;
+  if(abbr==='W2W') return po.r1_w2?.w||null;
+  if(abbr==='W3W') return po.r1_w3?.w||null;
+  // Round-2 (Conf Semi) winner placeholders → R2 series winners (for R3 matchups)
+  if(abbr==='ES1') return po.r2_e1?.w||null;
+  if(abbr==='ES2') return po.r2_e2?.w||null;
+  if(abbr==='WS1') return po.r2_w1?.w||null;
+  if(abbr==='WS2') return po.r2_w2?.w||null;
+  // Conference Champ placeholders → R3 series winners (for Finals matchup)
+  if(abbr==='ECF') return po.r3_e?.w||null;
+  if(abbr==='WCF') return po.r3_w?.w||null;
   return null;
 }
 
@@ -1702,18 +1728,27 @@ function AllPicks({all,res,cfg}){
         </div>
         {SERIES.filter(s=>s.r===rnd).map(s=>{
           const real=res.po?.[s.id]; const rpts=ROUNDS.find(r=>r.k===s.r).pts;
+          // Resolve placeholder seeds (E8, E1W, ECF, ...) to real team abbrs so
+          // the matchup header shows actual team logos/names rather than slot
+          // labels like "E #8" or "E1/E8 W". Falls back to the placeholder when
+          // upstream results aren't entered yet.
+          const t1r=resolveTeam(s.t1,res)||s.t1;
+          const t2r=resolveTeam(s.t2,res)||s.t2;
           return <div key={s.id} style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:11,marginBottom:9,overflow:"hidden"}}>
             <div style={{background:C.bg3,padding:"9px 13px",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-              <Logo abbr={s.t1} size={24}/><span style={{fontWeight:700,fontSize:13,flex:1}}>{sn(s.t1)} vs {sn(s.t2)}</span><Logo abbr={s.t2} size={24}/>
-              {real?.w?<span style={{color:C.ok,fontWeight:700,fontSize:11}}>✓ {sn(real.w)} in {real.g}</span>:<span style={{color:C.t3,fontSize:11}}>Not played</span>}
+              <Logo abbr={t1r} size={24}/><span style={{fontWeight:700,fontSize:13,flex:1}}>{sn(t1r)} vs {sn(t2r)}</span><Logo abbr={t2r} size={24}/>
+              {real?.w?<span style={{color:C.ok,fontWeight:700,fontSize:11}}>✓ {sn(resolveTeam(real.w,res)||real.w)} in {real.g}</span>:<span style={{color:C.t3,fontSize:11}}>Not played</span>}
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:7,padding:9}}>
               {all.map((u,pi)=>{
                 const preds=u.isAI?u.po:u.po||{}; const pred=preds[s.id];
-                const sc=scoreS(pred,real,rpts); const bg=BG[sc.t];
+                // Resolve the predicted winner so it matches against the real
+                // result (e.g. user picked "E8" pre-Play-In → resolves to ORL).
+                const resolvedPred=pred?.w?{...pred,w:resolveTeam(pred.w,res)||pred.w}:pred;
+                const sc=scoreS(resolvedPred,real,rpts); const bg=BG[sc.t];
                 return <div key={u.id} style={{background:bg.bg,border:`1px solid ${bg.c}`,borderRadius:9,padding:"8px 10px"}}>
                   <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}><Avatar user={u} size={18} idx={pi}/><div style={{fontSize:10,fontWeight:800,color:pcol(u,pi)}}>{u.name}</div></div>
-                  <div style={{fontSize:11,color:C.t2,marginBottom:2}}>{pred?.w?<><strong>{sn(pred.w)}</strong> in {pred.g}</>:<span style={{color:C.t3}}>—</span>}</div>
+                  <div style={{fontSize:11,color:C.t2,marginBottom:2}}>{pred?.w?<><strong>{sn(resolveTeam(pred.w,res)||pred.w)}</strong> in {pred.g}</>:<span style={{color:C.t3}}>—</span>}</div>
                   <div style={{fontWeight:900,fontSize:13,color:bg.c}}>{sc.t==="pending"?"—":`+${sc.p}`}</div>
                 </div>;
               })}
@@ -2051,12 +2086,17 @@ function NBASync({res,setPoR,setPiR}){
     if(c1.winner)seriesMap[key].wins[a1]=(seriesMap[key].wins[a1]||0)+1;
     if(c2.winner)seriesMap[key].wins[a2]=(seriesMap[key].wins[a2]||0)+1;
   });
+  // Resolve placeholders for R2/R3/Finals so Auto-Sync covers all rounds — not
+  // just R1. As soon as upstream results are entered (R1 → R2, R2 → R3, R3 →
+  // Finals), the corresponding placeholder resolves to a real team and that
+  // matchup becomes syncable. Series whose teams aren't decided yet are skipped.
   const poMatches=SERIES.map(s=>{
-    const t1=T[s.t1]?s.t1:null,t2=T[s.t2]?s.t2:null;
-    if(!t1||!t2)return null;
+    const t1=T[s.t1]?s.t1:resolveTeam(s.t1,res);
+    const t2=T[s.t2]?s.t2:resolveTeam(s.t2,res);
+    if(!t1||!t2||!T[t1]||!T[t2])return null;
     const key=[t1,t2].sort().join('|');
     const data=seriesMap[key];
-    return data?{s,data}:null;
+    return data?{s,t1,t2,data}:null;
   }).filter(Boolean);
 
   const totalFound=piMatches.filter(p=>p.ev).length+poMatches.length;
@@ -2115,24 +2155,27 @@ function NBASync({res,setPoR,setPiR}){
         <div>
           <div style={{fontSize:10,fontWeight:800,color:C.t3,textTransform:"uppercase",letterSpacing:"1.5px",marginBottom:8}}>🏀 Playoff Series</div>
           <div style={{display:"flex",flexDirection:"column",gap:7}}>
-            {poMatches.map(({s,data})=>{
+            {poMatches.map(({s,t1,t2,data})=>{
               const wins=data.wins;
-              const w1=wins[s.t1]||0,w2=wins[s.t2]||0;
-              const winner=w1>=4?s.t1:w2>=4?s.t2:null;
+              // Look up wins by the RESOLVED abbreviation, since seriesMap is
+              // keyed off ESPN's real team abbrs (e.g. DET, OKC) — not slot
+              // placeholders like "E1W" we use in the SERIES table.
+              const w1=wins[t1]||0,w2=wins[t2]||0;
+              const winner=w1>=4?t1:w2>=4?t2:null;
               const totalGames=w1+w2;
               const current=res.po?.[s.id];
               const isApplied=applied[s.id]||current?.w===winner;
               return(
                 <div key={s.id} style={{background:C.bg2,border:`1px solid ${winner?C.ok+"44":C.bdL}`,borderRadius:11,padding:"11px 14px",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                  <Logo abbr={s.t1} size={24}/>
+                  <Logo abbr={t1} size={24}/>
                   <div style={{flex:1}}>
-                    <div style={{fontWeight:700,fontSize:13}}>{sn(s.t1)} vs {sn(s.t2)}</div>
+                    <div style={{fontWeight:700,fontSize:13}}>{sn(t1)} vs {sn(t2)}</div>
                     <div style={{fontSize:11,color:C.t3,marginTop:1}}>
-                      {T[s.t1]?.a}: {w1} · {T[s.t2]?.a}: {w2}
+                      {T[t1]?.a}: {w1} · {T[t2]?.a}: {w2}
                       {current?.w&&<span style={{color:C.ok,marginLeft:8}}>· App: {T[current.w]?.a} in {current.g}</span>}
                     </div>
                   </div>
-                  <Logo abbr={s.t2} size={24}/>
+                  <Logo abbr={t2} size={24}/>
                   {winner?(
                     <button onClick={()=>{setPoR(s.id,winner,totalGames);setApplied(p=>({...p,[s.id]:true}));}}
                       style={{...isApplied?btn.g:btn.s,fontSize:11,padding:"6px 12px"}} disabled={isApplied}>
@@ -2273,11 +2316,15 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(270px,1fr))",gap:7}}>
                 {SERIES.filter(s=>s.r===r.k).map(s=>{
                   const real=res.po?.[s.id];
+                  // Resolve placeholders so the admin sees real team logos/names
+                  // for R2/R3/Finals once the upstream results are entered.
+                  const t1r=resolveTeam(s.t1,res)||s.t1;
+                  const t2r=resolveTeam(s.t2,res)||s.t2;
                   return <div key={s.id} style={{background:C.bg2,border:`1px solid ${C.bdL}`,borderRadius:9,padding:"9px 13px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:7,flexWrap:"wrap"}}>
                     <div style={{flex:1}}>
-                      <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}><Logo abbr={s.t1} size={18}/><span style={{fontSize:11,color:C.t3}}>vs</span><Logo abbr={s.t2} size={18}/></div>
-                      <div style={{fontWeight:600,fontSize:12}}>{sn(s.t1)} vs {sn(s.t2)}</div>
-                      {real?.w&&<div style={{color:C.ok,fontSize:10,marginTop:1}}>✓ {sn(real.w)} in {real.g}</div>}
+                      <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}><Logo abbr={t1r} size={18}/><span style={{fontSize:11,color:C.t3}}>vs</span><Logo abbr={t2r} size={18}/></div>
+                      <div style={{fontWeight:600,fontSize:12}}>{sn(t1r)} vs {sn(t2r)}</div>
+                      {real?.w&&<div style={{color:C.ok,fontSize:10,marginTop:1}}>✓ {sn(resolveTeam(real.w,res)||real.w)} in {real.g}</div>}
                     </div>
                     <button onClick={()=>{setEditSid(s.id);setEw(real?.w||"");setEg(real?.g?.toString()||"");}} style={btn.g}>Edit</button>
                   </div>;
@@ -2396,14 +2443,19 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
       </main>
 
       {/* Edit Modal */}
-      {editSid&&editS&&<div style={{position:"fixed",inset:0,background:"#000c",display:"flex",alignItems:"center",justifyContent:"center",zIndex:200,padding:16}} onClick={()=>setEditSid(null)}>
+      {editSid&&editS&&(()=>{
+        // Resolve placeholders so the modal shows real team names/logos and
+        // stores the resolved abbreviation as the winner (not "E1W"/"WCF").
+        const eT1=resolveTeam(editS.t1,res)||editS.t1;
+        const eT2=resolveTeam(editS.t2,res)||editS.t2;
+        return <div style={{position:"fixed",inset:0,background:"#000c",display:"flex",alignItems:"center",justifyContent:"center",zIndex:200,padding:16}} onClick={()=>setEditSid(null)}>
         <div style={{background:C.bg1,border:`1px solid ${C.bd}`,borderRadius:18,padding:26,maxWidth:320,width:"100%"}} onClick={e=>e.stopPropagation()}>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}><Logo abbr={editS.t1} size={26}/><span style={{color:C.t3,fontSize:12}}>vs</span><Logo abbr={editS.t2} size={26}/></div>
-          <h3 style={{margin:"6px 0 16px",fontWeight:900,fontSize:15}}>{sn(editS.t1)} vs {sn(editS.t2)}</h3>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}><Logo abbr={eT1} size={26}/><span style={{color:C.t3,fontSize:12}}>vs</span><Logo abbr={eT2} size={26}/></div>
+          <h3 style={{margin:"6px 0 16px",fontWeight:900,fontSize:15}}>{sn(eT1)} vs {sn(eT2)}</h3>
           <div style={{fontSize:10,color:C.t3,fontWeight:800,textTransform:"uppercase",letterSpacing:"1px",marginBottom:5}}>Winner</div>
           <select value={ew} onChange={e=>setEw(e.target.value)} style={{...sel,width:"100%",marginBottom:12,display:"block"}}>
             <option value="">— not played —</option>
-            {[editS.t1,editS.t2].map(k=><option key={k} value={k}>{sn(k)}</option>)}
+            {[eT1,eT2].filter(k=>T[k]).map(k=><option key={k} value={k}>{sn(k)}</option>)}
           </select>
           <div style={{fontSize:10,color:C.t3,fontWeight:800,textTransform:"uppercase",letterSpacing:"1px",marginBottom:5}}>Total Games</div>
           <select value={eg} onChange={e=>setEg(e.target.value)} style={{...sel,width:"100%",marginBottom:18,display:"block"}}>
@@ -2416,7 +2468,8 @@ function Admin({users,res,cfg,adminPw,setPoR,setPiR,setChamp,setMvp,setCfg,logou
             <button onClick={()=>setEditSid(null)} style={{...btn.g,flex:1}}>Cancel</button>
           </div>
         </div>
-      </div>}
+      </div>;
+      })()}
     </div>
   );
 }
