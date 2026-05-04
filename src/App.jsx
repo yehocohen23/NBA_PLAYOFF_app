@@ -269,7 +269,7 @@ async function fetchPlayoffGames(){
   return all;
 }
 // ESPN numeric team IDs (for injuries API)
-const ESPN_IDS={DET:8,BOS:2,NYK:18,CLE:5,TOR:28,ATL:1,OKC:25,SAS:24,DEN:7,LAL:13,HOU:10,MIN:16,ORL:19,PHX:21,LAC:12,GSW:9};
+const ESPN_IDS={DET:8,BOS:2,NYK:18,CLE:5,TOR:28,ATL:1,OKC:25,SAS:24,DEN:7,LAL:13,HOU:10,MIN:16,ORL:19,PHX:21,LAC:12,GSW:9,PHI:20,POR:22,CHA:30,MIA:14};
 // Compute current series win totals from ESPN completed games (date-based filter, not season type)
 async function fetchSeriesScores(){
   const evts=await fetchPlayoffGames();
@@ -1189,10 +1189,11 @@ const TDATA={
   LAL:{seed:"W4",rec:"50-32",odds:"+2500",stars:["LeBron James","Anthony Davis"],info:"LeBron's 19th postseason at 41. First matchup with two 75k+ pts players.",q:"LeBron endurance. AD injury history looms."},
   HOU:{seed:"W5",rec:"49-33",odds:"+1400",stars:["Kevin Durant","Alperen Şengün"],info:"KD's 14th postseason, first with HOU. Ended season on a 10-1 run.",q:"KD must be unleashed. Şengün dominating the paint is key."},
   MIN:{seed:"W6",rec:"47-35",odds:"+2000",stars:["Anthony Edwards","Rudy Gobert"],info:"3rd straight deep West run. Ant Edwards top-5 player in the world.",q:"Can they finally get past the second round?"},
+  PHI:{seed:"E7",rec:"42-40",odds:"+2800",stars:["Joel Embiid","Tyrese Maxey"],info:"Snuck in via Play-In, then completed historic 3-1 comeback over Boston in R1 (G7). Embiid healthy and dominating.",q:"Can the bench survive Embiid sitting? Maxey health crucial."},
 };
 
 async function fetchAllInjuries(){
-  const playoffTeams=['DET','BOS','NYK','CLE','TOR','ATL','OKC','SAS','DEN','LAL','HOU','MIN'];
+  const playoffTeams=['DET','BOS','NYK','CLE','TOR','ATL','OKC','SAS','DEN','LAL','HOU','MIN','PHI'];
   const map={};
   await Promise.all(playoffTeams.map(async abbr=>{
     try{
@@ -1231,6 +1232,11 @@ function Teams({res}){
   const [injLoading,setInjLoading]=useState(false);
   const [expanded,setExpanded]=useState(null);
   const [seriesScores,setSeriesScores]=useState({});
+  // Round sub-tab — defaults to whichever round is currently underway. Once R1
+  // finishes (all 8 results entered), automatically jump to R2 so semifinal
+  // matchups become the default view.
+  const r1Done=SERIES.filter(s=>s.r==="r1").every(s=>res?.po?.[s.id]?.w);
+  const [roundTab,setRoundTab]=useState(r1Done?"r2":"r1");
 
   const loadInjuries=()=>{
     setInjLoading(true);
@@ -1251,8 +1257,11 @@ function Teams({res}){
   };
 
   const MatchupCard=({s})=>{
-    const rt1=s.t1; // always a real team
-    const rt2=resolveTeam(s.t2,res)||s.t2; // resolve E7/E8/W7/W8
+    // Resolve BOTH sides — for R1 t1 is always a real team but t2 may be a
+    // Play-In placeholder (E7/E8/W7/W8). For R2+ both sides are placeholders
+    // (E1W/E4W/ES1/WCF/…) until upstream rounds resolve.
+    const rt1=resolveTeam(s.t1,res)||s.t1;
+    const rt2=resolveTeam(s.t2,res)||s.t2;
     const d1=TDATA[rt1]||{};
     const d2=TDATA[rt2]||{};
     const inj1=injuries[rt1]||[];
@@ -1295,7 +1304,7 @@ function Teams({res}){
         )}
         {/* Main row */}
         <div style={{display:"flex",alignItems:"stretch"}}>
-          <TeamCol abbr={rt1} placeholder={null} d={d1} inj={inj1} seriesWins={sw1}/>
+          <TeamCol abbr={rt1} placeholder={T[rt1]?null:s.t1} d={d1} inj={inj1} seriesWins={sw1}/>
           {/* Center */}
           <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"10px 6px",gap:4,minWidth:44}}>
             {sd?.games>0&&!result?.w
@@ -1353,10 +1362,19 @@ function Teams({res}){
     );
   };
 
-  const r1Series=SERIES.filter(s=>s.r==="r1");
+  // Filter series by selected round sub-tab. R2 matchups have placeholder
+  // teams (E1W/E4W/…) until R1 results are entered — they'll show "TBD"
+  // until then, then resolve to real teams automatically.
+  const roundSeries=SERIES.filter(s=>s.r===roundTab);
+  const RTABS=[
+    {k:"r1",l:"🏀 First Round"},
+    {k:"r2",l:"⚔️ Semifinals"},
+    {k:"r3",l:"🏆 Conf. Finals"},
+    {k:"finals",l:"💍 NBA Finals"},
+  ];
   return(
     <div>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,flexWrap:"wrap",gap:8}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8}}>
         <div>
           <h2 style={{margin:"0 0 3px",fontWeight:900,fontFamily:"Georgia,serif",fontSize:22}}>Playoff Matchups</h2>
           <p style={{margin:0,color:C.t3,fontSize:12}}>Tap ▼ for team details, scouting report & live injury status</p>
@@ -1365,14 +1383,29 @@ function Teams({res}){
           {injLoading?"⏳ Loading…":"🔄 Refresh Injuries"}
         </button>
       </div>
+      {/* Round sub-tabs */}
+      <div style={{display:"flex",gap:5,marginBottom:14,flexWrap:"wrap"}}>
+        {RTABS.map(r=>{
+          const hasMatchups=SERIES.filter(s=>s.r===r.k).some(s=>{
+            const a=resolveTeam(s.t1,res),b=resolveTeam(s.t2,res);
+            return T[a]&&T[b];
+          });
+          return <button key={r.k} onClick={()=>setRoundTab(r.k)}
+            style={roundTab===r.k?btn.a:{...btn.g,opacity:hasMatchups?1:0.55}}>
+            {r.l}{!hasMatchups&&<span style={{color:C.t3,fontSize:10,marginLeft:4}}>· TBD</span>}
+          </button>;
+        })}
+      </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:20}}>
         <div>
           <div style={{fontSize:10,fontWeight:800,color:"#60a5fa",textTransform:"uppercase",letterSpacing:"2px",marginBottom:10,paddingBottom:5,borderBottom:`1px solid ${C.bdL}`}}>Eastern Conference</div>
-          {r1Series.filter(s=>s.conf==="E").map(s=><MatchupCard key={s.id} s={s}/>)}
+          {roundSeries.filter(s=>s.conf==="E"||s.conf==="F").map(s=><MatchupCard key={s.id} s={s}/>)}
+          {roundSeries.filter(s=>s.conf==="E").length===0&&roundTab!=="finals"&&<div style={{color:C.t3,fontSize:11,padding:14,textAlign:"center",border:`1px dashed ${C.bdL}`,borderRadius:10}}>Awaiting earlier-round results…</div>}
         </div>
         <div>
           <div style={{fontSize:10,fontWeight:800,color:C.acc,textTransform:"uppercase",letterSpacing:"2px",marginBottom:10,paddingBottom:5,borderBottom:`1px solid ${C.bdL}`}}>Western Conference</div>
-          {r1Series.filter(s=>s.conf==="W").map(s=><MatchupCard key={s.id} s={s}/>)}
+          {roundSeries.filter(s=>s.conf==="W").map(s=><MatchupCard key={s.id} s={s}/>)}
+          {roundSeries.filter(s=>s.conf==="W").length===0&&roundTab!=="finals"&&<div style={{color:C.t3,fontSize:11,padding:14,textAlign:"center",border:`1px dashed ${C.bdL}`,borderRadius:10}}>Awaiting earlier-round results…</div>}
         </div>
       </div>
     </div>
@@ -1856,6 +1889,11 @@ function Games(){
     const away=cs.find(c=>c.homeAway==="away")||cs[0];
     const home=cs.find(c=>c.homeAway==="home")||cs[1];
     if(!away||!home)return null;
+    // Normalize ESPN abbreviations (NY→NYK, SA→SAS, GS→GSW, …) so Logo, T[], and
+    // stats lookups all hit the same canonical key. Without this NYK/SAS show
+    // the colored placeholder instead of the team logo.
+    const aA=normAbbr(away.team?.abbreviation);
+    const hA=normAbbr(home.team?.abbreviation);
     const done=comp.status?.type?.completed;
     const live=!done&&comp.status?.type?.id!=="1";
     const dt=new Date(ev.date);
@@ -1886,9 +1924,9 @@ function Games(){
         <div style={{padding:"10px 14px",display:"flex",alignItems:"center",gap:10}}>
           {/* Away */}
           <div style={{flex:1,display:"flex",alignItems:"center",gap:8}}>
-            <Logo abbr={away.team?.abbreviation} size={34}/>
+            <Logo abbr={aA} size={34}/>
             <div style={{flex:1}}>
-              <div style={{fontWeight:done&&away.winner?900:600,color:done&&away.winner?C.t1:C.t2,fontSize:13}}>{away.team?.displayName||away.team?.abbreviation}</div>
+              <div style={{fontWeight:done&&away.winner?900:600,color:done&&away.winner?C.t1:C.t2,fontSize:13}}>{away.team?.displayName||T[aA]?.n||aA}</div>
               <div style={{fontSize:10,color:C.t3}}>Away</div>
             </div>
             {(done||live)&&<div style={{fontSize:22,fontWeight:900,color:away.winner?C.ok:C.t2,minWidth:28,textAlign:"right"}}>{away.score}</div>}
@@ -1904,9 +1942,9 @@ function Games(){
           </div>
           {/* Home */}
           <div style={{flex:1,display:"flex",alignItems:"center",gap:8,flexDirection:"row-reverse"}}>
-            <Logo abbr={home.team?.abbreviation} size={34}/>
+            <Logo abbr={hA} size={34}/>
             <div style={{flex:1,textAlign:"right"}}>
-              <div style={{fontWeight:done&&home.winner?900:600,color:done&&home.winner?C.t1:C.t2,fontSize:13}}>{home.team?.displayName||home.team?.abbreviation}</div>
+              <div style={{fontWeight:done&&home.winner?900:600,color:done&&home.winner?C.t1:C.t2,fontSize:13}}>{home.team?.displayName||T[hA]?.n||hA}</div>
               <div style={{fontSize:10,color:C.t3}}>Home</div>
             </div>
             {(done||live)&&<div style={{fontSize:22,fontWeight:900,color:home.winner?C.ok:C.t2,minWidth:28,textAlign:"left"}}>{home.score}</div>}
@@ -1924,7 +1962,11 @@ function Games(){
                 {!statsLoading&&stats&&(
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
                     {[away,home].map((side,si)=>{
+                      // Raw ESPN abbreviation — used to look up stats blocks
+                      // (stats.leaders/teams are keyed by ESPN's own teamAbbr).
                       const abbr=side.team?.abbreviation;
+                      // Normalized abbreviation — used for Logo + T[] (our internal canonical key).
+                      const nA=normAbbr(abbr);
                       const tl=stats.leaders?.find(l=>l.teamAbbr===abbr);
                       const ts=stats.teams?.find(t=>t.teamAbbr===abbr);
                       const fg=ts?.stats?.fieldGoalPct||ts?.stats?.fieldGoalsAttempted;
@@ -1935,7 +1977,7 @@ function Games(){
                       return(
                         <div key={abbr} style={{textAlign:si===1?"right":"left"}}>
                           <div style={{fontWeight:800,fontSize:11,color:C.t2,marginBottom:5,display:"flex",alignItems:"center",gap:4,flexDirection:si===1?"row-reverse":"row"}}>
-                            <Logo abbr={abbr} size={14}/>{T[abbr]?.a||abbr}
+                            <Logo abbr={nA} size={14}/>{T[nA]?.a||nA}
                           </div>
                           {tl?.pts&&<div style={{fontSize:11,color:C.t1,marginBottom:2}}>🏀 <b>{tl.pts.displayValue}</b> — {tl.pts.athlete?.displayName?.split(' ').pop()||"pts"}</div>}
                           {tl?.reb&&<div style={{fontSize:10,color:C.t2,marginBottom:2}}>🔄 <b>{tl.reb.displayValue}</b> REB — {tl.reb.athlete?.displayName?.split(' ').pop()||""}</div>}
